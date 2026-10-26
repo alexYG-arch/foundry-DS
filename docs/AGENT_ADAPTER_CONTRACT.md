@@ -1,7 +1,7 @@
 # Agent Transport 与 Sandbox 规格 v2
 
 - 版本：`AGENT_TRANSPORT_SPEC_V2`
-- 状态：`P2_HEADLESS_LIVE_PASS`（真实 DSH headless + 工具调用 + session handoff + Plan/Scope 1.3 live；GUI-created desktop session/attach/controller 待做）
+- 状态：`P2_HEADLESS_LIVE_PASS`（真实 DSH headless + 工具调用 + headless session handoff + Plan/Scope 1.3 live；GUI-created standard session handoff `NOT_SUPPORTED`；attach/controller 待做）
 - 日期：2026-10-26
 - 基线：`eb01bc0`，63 模块 / 923 项门禁（P2 transport scaffold）
 - 配套方案：`Harness_Foundry_升级方案_v2_DeepSeek与无Codex.md`
@@ -213,6 +213,15 @@ export DSH_HOME="<scope.dsh_home>"
 - `RESUME`：`--session-id` 必须指向同一 `DSH_HOME` 的持久化 session；
 - `HANDOFF`：见 §4；
 - 同一 session 的并发写由 `session.lock` 拒绝；adapter 必须先检查锁并返回 `DSH_SESSION_LOCKED`。
+
+**P2 实测边界**：headless 创建的 session 可用 `--session-id` 接管（同 id）；**Desktop GUI 创建的 `standard` preset session 不能由 headless one-shot 接管**：
+
+```text
+session "session-…" runs under agent preset "standard",
+which the one-shot runner does not compose
+```
+
+因此 GUI-created Desktop session 的 handoff 记为 `SESSION_PRESET_UNSUPPORTED`；它需要 Desktop attach 或 headless-compatible preset，而不是继续调用 headless。
 
 ---
 
