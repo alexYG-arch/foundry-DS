@@ -79,6 +79,7 @@ REQUIRED_MODULES = (
     "test_sandbox_seatbelt",
     "test_agent_scope13",
     "test_dsh_adapter",
+    "test_api_adapter",
     "test_check_design_record",
 )
 
