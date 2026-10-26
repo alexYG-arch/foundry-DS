@@ -232,6 +232,32 @@ loopback_protocols=["TCP", "UDP"]，不改变网络授权或业务检查义务�
 profile 扩大资源或改变合同义务。版本化资源配置及方法见前述资源接入说明，无须新增 G1/G2
 规则、逐 Case 确认或第二套状态库。
 
+## Plan 1.3：AGENT executor（P1 编译形状）
+
+Plan 1.3 只对**新计划**生效；1.0–1.2 的 `CODEX`/`LOCAL` 语义不变。
+
+```json
+{
+  "schema_version": "1.3",
+  "workpacks": [{
+    "workpack_id": "IMPLEMENT",
+    "executor": "AGENT",
+    "agent": {"adapter": "dsh-headless", "adapter_version": "1",
+              "session": {"mode": "HANDOFF"}, "model": {"mode": "FIXED", "name": "deepseek-chat"}}
+  }]
+}
+```
+
+编译期规则：
+
+- `executor` 只接受 `AGENT | LOCAL`；1.3 中出现 `CODEX` 拒绝；
+- `AGENT` 必须有 `agent.adapter`（安全 id）和 `agent.adapter_version`；`session`/`model` 可选对象；
+- `AGENT` 不得有 `local_argv`；`agent` 不得出现在非 AGENT workpack；
+- 1.3 继续允许 1.1/1.2 的 environment/effects 与 1.2 的 `resource_profile_ref`；
+- 旧 1.0–1.2 不自动迁移。
+
+**实现边界（P1 当前）**：本文只定义编译形状。Scope 1.3、agent dispatch 与 `advance-build` 的运行时支持仍在 P1/P2；在运行时完成前，1.3 计划只能 `compile-build-plan`，不能当作可执行授权。
+
 ## 既有只读编译接口
 
 ```bash

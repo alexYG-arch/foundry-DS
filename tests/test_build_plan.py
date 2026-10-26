@@ -109,6 +109,36 @@ class BuildPlanTests(unittest.TestCase):
             self.compile()
         self.assertEqual(caught.exception.details["reason_code"], code)
 
+    def test_plan_13_agent_workpack_compiles(self):
+        self.plan["schema_version"] = "1.3"
+        self.plan["workpacks"][0]["executor"] = "AGENT"
+        self.plan["workpacks"][0]["agent"] = {"adapter": "dsh-headless", "adapter_version": "1",
+                                              "session": {"mode": "NEW"}, "model": {"mode": "FIXED", "name": "deepseek-chat"}}
+        result = self.compile()
+        self.assertEqual(result["plan"]["schema_version"], "1.3")
+        self.assertEqual(result["plan"]["workpacks"][0]["executor"], "AGENT")
+
+    def test_plan_12_agent_is_rejected(self):
+        self.plan["schema_version"] = "1.2"
+        self.plan["workpacks"][0]["executor"] = "AGENT"
+        self.assert_rejected("BUILD_PLAN_EXECUTOR_UNSUPPORTED")
+
+    def test_plan_13_codex_is_rejected(self):
+        self.plan["schema_version"] = "1.3"
+        self.assert_rejected("BUILD_PLAN_EXECUTOR_UNSUPPORTED")
+
+    def test_plan_13_agent_requires_agent_object(self):
+        self.plan["schema_version"] = "1.3"
+        self.plan["workpacks"][0]["executor"] = "AGENT"
+        self.assert_rejected("BUILD_PLAN_AGENT_INVALID")
+
+    def test_plan_13_agent_rejects_local_argv(self):
+        self.plan["schema_version"] = "1.3"
+        self.plan["workpacks"][0]["executor"] = "AGENT"
+        self.plan["workpacks"][0]["agent"] = {"adapter": "fixture-agent", "adapter_version": "1"}
+        self.plan["workpacks"][0]["local_argv"] = ["/bin/true"]
+        self.assert_rejected("BUILD_PLAN_AGENT_INVALID")
+
     def test_domain_neutral_output_has_exact_declared_tasks_and_no_authority_or_hashes(self):
         original = deepcopy(self.request)
         result = self.compile()

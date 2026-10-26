@@ -76,6 +76,7 @@ REQUIRED_MODULES = (
     "test_declarative_profile",
     "test_declarative_dispatch",
     "test_check_ios_env",
+    "test_sandbox_seatbelt",
     "test_check_design_record",
 )
 

@@ -25,7 +25,7 @@ MODULES = (
     "build_runtime", "build_reconciliation", "build_reassessment", "build_correction", "build_preview", "build_check_protocol", "build_rebind", "build_resource_lifecycle", "build_state", "build_artifacts", "build_effects", "build_replan", "build_repair", "build_entrypoint", "source_intake", "acceptance_contract", "revision_store",
     "agent_contract", "agent_codex", "local_process", "coding_process", "coding_defaults", "coding_events", "process_observation", "verification_resources", "verification_snapshot", "resource_observation", "resource_network", "resource_credentials", "legacy_history", "test_execution",
 )
-PACKAGE_MODULES = {"agents": ("__init__", "base", "codex", "profile", "sandbox_none")}
+PACKAGE_MODULES = {"agents": ("__init__", "base", "codex", "profile", "sandbox_none", "sandbox_seatbelt")}
 ALLOWED_TOP_LEVEL = frozenset(MODULES) | frozenset(PACKAGE_MODULES)
 
 DOCS = ("RSI_ADOPTION", "RSI_CASE_INTAKE", "RSI_REVIEW_AND_TDD", "RSI_WIKI", "RSI_DELIVERY", "GENERIC_BUILD_PLAN", "HARNESS_DESIGN_GUIDE", "GENERIC_BUILD_CLI", "GENERIC_BUILD_RUNTIME",

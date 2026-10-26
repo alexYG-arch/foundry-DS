@@ -126,7 +126,7 @@ def validate_build_plan(requirement_ir: Mapping[str, Any], plan: Mapping[str, An
     """
     atoms, cases, sources = _requirement_catalog(requirement_ir)
     _fields(plan, {"schema_version", "plan_id", "revision", "requirement_revision", "workpacks"}, "plan")
-    _require(isinstance(plan["schema_version"], str) and plan["schema_version"] in {"1.0", "1.1", "1.2"},
+    _require(isinstance(plan["schema_version"], str) and plan["schema_version"] in {"1.0", "1.1", "1.2", "1.3"},
              "BUILD_PLAN_VERSION_UNSUPPORTED", "unsupported build-plan schema")
     _id(plan["plan_id"], "plan.plan_id")
     _require(type(plan["revision"]) is int and plan["revision"] > 0,
@@ -139,11 +139,16 @@ def validate_build_plan(requirement_ir: Mapping[str, Any], plan: Mapping[str, An
     covered_atoms: set[str] = set()
     covered_cases: set[str] = set()
     for workpack_id, workpack in workpacks.items():
-        _fields(workpack, {"workpack_id", "job_id", "executor", "goal", "depends_on", "atom_ids",
-                           "inputs", "artifacts", "verification"} | ({"local_argv"}
-                           if "local_argv" in workpack else set()) | (
-                           set(workpack) & {"environment", "effects"} if plan["schema_version"] in {"1.1", "1.2"} else set()),
-                f"workpack {workpack_id}")
+        version = plan["schema_version"]
+        allowed_workpack_fields = {"workpack_id", "job_id", "executor", "goal", "depends_on", "atom_ids",
+                                   "inputs", "artifacts", "verification"}
+        if "local_argv" in workpack:
+            allowed_workpack_fields.add("local_argv")
+        if version in {"1.1", "1.2", "1.3"}:
+            allowed_workpack_fields |= set(workpack) & {"environment", "effects"}
+        if version == "1.3" and "agent" in workpack:
+            allowed_workpack_fields.add("agent")
+        _fields(workpack, allowed_workpack_fields, f"workpack {workpack_id}")
         if "environment" in workpack:
             env = workpack["environment"]
             _fields(env, {"python", "modules", "paths"}, "environment")
@@ -165,7 +170,26 @@ def validate_build_plan(requirement_ir: Mapping[str, Any], plan: Mapping[str, An
                      and not set(effects["allowed"]) & set(effects["must_preserve"]),
                      "BUILD_EFFECTS_INVALID", "required files must be allowed; preserved files cannot be writable effects")
         _id(workpack["job_id"], "workpack.job_id")
-        _require(workpack["executor"] in ("CODEX", "LOCAL"), "BUILD_PLAN_EXECUTOR_UNSUPPORTED", "executor must be CODEX or LOCAL")
+        allowed_executors = {"AGENT", "LOCAL"} if version == "1.3" else {"CODEX", "LOCAL"}
+        _require(workpack["executor"] in allowed_executors, "BUILD_PLAN_EXECUTOR_UNSUPPORTED",
+                 "executor must be AGENT/LOCAL for 1.3 or CODEX/LOCAL for 1.0-1.2")
+        if workpack["executor"] == "AGENT":
+            _require("agent" in workpack and isinstance(workpack["agent"], dict),
+                     "BUILD_PLAN_AGENT_INVALID", "AGENT workpack needs an agent object")
+            agent = workpack["agent"]
+            _fields(agent, {"adapter", "adapter_version"} | (set(agent) & {"session", "model"}), "agent")
+            _id(agent["adapter"], "agent.adapter")
+            _require(isinstance(agent["adapter_version"], str) and bool(agent["adapter_version"].strip()),
+                     "BUILD_PLAN_AGENT_INVALID", "agent.adapter_version must be nonempty text")
+            for optional in ("session", "model"):
+                if optional in agent:
+                    _require(isinstance(agent[optional], dict), "BUILD_PLAN_AGENT_INVALID",
+                             f"agent.{optional} must be an object")
+            _require("local_argv" not in workpack, "BUILD_PLAN_AGENT_INVALID",
+                     "AGENT workpack cannot declare local_argv")
+        elif "agent" in workpack:
+            _require(version == "1.3" and workpack["executor"] == "AGENT", "BUILD_PLAN_AGENT_INVALID",
+                     "agent is only valid on a 1.3 AGENT workpack")
         if "local_argv" in workpack:
             _require(workpack["executor"] == "LOCAL" and isinstance(workpack["local_argv"], list)
                      and bool(workpack["local_argv"]), "BUILD_PLAN_LOCAL_COMMAND_INVALID",
@@ -259,7 +283,7 @@ def validate_build_plan(requirement_ir: Mapping[str, Any], plan: Mapping[str, An
         for check in workpack["verification"]:
             case = cases[check["case_id"]]
             if "required_artifact_ids" in case or "acceptance_stage" in case:
-                _require(plan["schema_version"] in {"1.1", "1.2"}, "BUILD_PLAN_VERSION_UNSUPPORTED",
+                _require(plan["schema_version"] in {"1.1", "1.2", "1.3"}, "BUILD_PLAN_VERSION_UNSUPPORTED",
                          "Case prerequisites and acceptance_stage require plan 1.1 or later")
                 required = _ids(case.get("required_artifact_ids", []), "case.required_artifact_ids")
                 available = {row["artifact_id"] for row in workpack["artifacts"]} | {
