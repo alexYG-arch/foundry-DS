@@ -187,6 +187,15 @@ class AgentBuildController:
                             "harness_e2e_verified": False}
                 feedback = str({"artifact_error": artifact_error,
                                 "verification": verification})[:2000]
+                if task_attempts < scope["max_task_attempts"] and used < scope["max_attempts"]:
+                    self.store.append_batch(self.program_id, [{
+                        "event_type": "BUILD_AGENT_REPAIR_REQUESTED",
+                        "payload": {"prepared_event_id": prepared_id, "workpack_id": task["workpack_id"],
+                                    "failed_attempt_id": attempt_id, "feedback": feedback,
+                                    "budget_workpack_ids": owners}}],
+                        expected_revision=len(events), idempotency_key=attempt_id + ":repair",
+                        created_at=datetime.now(timezone.utc).isoformat(), require_new=True)
+                    events = self.store.list_events(self.program_id)
                 if used >= scope["max_attempts"]:
                     return {"status": "ATTEMPT_BUDGET_EXHAUSTED", "workpack_id": task["workpack_id"],
                             "attempt_id": attempt_id, "artifact_error": artifact_error,

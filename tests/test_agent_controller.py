@@ -110,6 +110,10 @@ class AgentControllerTests(unittest.TestCase):
                     if row["event_type"] == "BUILD_ATTEMPT_FINISHED"]
         self.assertEqual(statuses, ["REJECTED", "ACCEPTED"])
         self.assertIn("Previous attempt was rejected", adapter.prompts[1])
+        repairs = [row for row in self.store.list_events(self.program)
+                   if row["event_type"] == "BUILD_AGENT_REPAIR_REQUESTED"]
+        self.assertEqual(len(repairs), 1)
+        self.assertTrue(repairs[0]["payload"]["failed_attempt_id"].startswith("AGENT-ATTEMPT-"))
 
     def test_controller_task_budget_exhaustion(self):
         adapter = FlakyAdapter(self.workspace, always_fail=True)
