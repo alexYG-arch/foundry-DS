@@ -4,7 +4,7 @@
 
 # ADR-0002：沙箱提供者与“去 Codex”的边界
 
-- 状态：`SUPERSEDED_BY_PLAN_V2`（本 ADR 允许 Codex sandbox 继续作为依赖；新方案要求无 Codex 的 seatbelt/bwrap）
+- 状态：`SUPERSEDED_BY_V3_CONTRACT_INDEPENDENCE`（本 ADR 允许 Codex sandbox 继续作为依赖；v2 曾要求 seatbelt/bwrap；v3 把它降为可选加固）
 - 日期：2026-10-26
 - 关联：`docs/decisions/ADR-0001-SCOPE-VERSIONING.md`、`Harness_Foundry_升级方案_多智能体适配与RSI自升级.md`、`Harness_Foundry_升级方案_补充_载体解绑与设计RSI.md`
 - 决策者：维护者（本轮调整）
