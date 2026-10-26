@@ -126,6 +126,36 @@ class AgentControllerTests(unittest.TestCase):
         self.assertEqual(result["status"], "TASK_REPAIR_BUDGET_EXHAUSTED", result)
         self.assertEqual(adapter.calls, 1)
 
+    def test_controller_holds_unresolved_started_attempt(self):
+        revision = len(self.store.list_events(self.program))
+        now = datetime.now(timezone.utc).isoformat()
+        self.store.append_batch(self.program, [{"event_type": "BUILD_ATTEMPT_STARTED",
+            "payload": {"prepared_event_id": self.prepared["event_id"], "attempt_id": "A-STUCK",
+                        "workpack_id": "IMPLEMENT", "job_id": "IMPLEMENT"}}],
+            expected_revision=revision, idempotency_key="stuck", created_at=now, require_new=True)
+        adapter = FlakyAdapter(self.workspace)
+        result = AgentBuildController(self.store, self.program,
+                                      adapter_factory=lambda task, scope: adapter).advance(self.prepared["event_id"])
+        self.assertEqual(result["status"], "HELD_UNRESOLVED_ATTEMPT", result)
+        self.assertEqual(adapter.calls, 0)
+
+    def test_controller_recovers_already_accepted_task(self):
+        revision = len(self.store.list_events(self.program))
+        now = datetime.now(timezone.utc).isoformat()
+        binding = {"prepared_event_id": self.prepared["event_id"], "attempt_id": "A-DONE",
+                   "workpack_id": "IMPLEMENT", "job_id": "IMPLEMENT"}
+        self.store.append_batch(self.program, [{"event_type": "BUILD_ATTEMPT_STARTED", "payload": binding}],
+            expected_revision=revision, idempotency_key="done-start", created_at=now, require_new=True)
+        self.store.append_batch(self.program, [{"event_type": "BUILD_ATTEMPT_FINISHED",
+            "payload": {**binding, "status": "ACCEPTED", "artifacts": {}}}],
+            expected_revision=revision + 1, idempotency_key="done-finish", created_at=now, require_new=True)
+        adapter = FlakyAdapter(self.workspace)
+        result = AgentBuildController(self.store, self.program,
+                                      adapter_factory=lambda task, scope: adapter).advance(self.prepared["event_id"])
+        self.assertEqual(result["status"], "PLAN_CHECKS_ACCEPTED", result)
+        self.assertEqual(result["accepted_workpacks"], ["IMPLEMENT"])
+        self.assertEqual(adapter.calls, 0)
+
     def test_controller_requires_approval(self):
         other = self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_PREPARED",
             "payload": {"scope": self.scope, "plan": self.plan}}], expected_revision=2,

@@ -91,10 +91,29 @@ class AgentBuildController:
                and row["payload"].get("prepared_event_id") == prepared_id for row in events):
             raise ValueError("agent build authorization is revoked")
         validate_scope_13(plan, scope)
+        # Recover only from persisted old events; never re-dispatch an uncertain
+        # attempt or a task the store already accepted.
+        task_ids = {task["workpack_id"] for task in plan["workpacks"]}
+        started = {row["payload"].get("attempt_id") for row in events
+                   if row["event_type"] == "BUILD_ATTEMPT_STARTED"
+                   and row["payload"].get("prepared_event_id") == prepared_id}
+        finished = {row["payload"].get("attempt_id"): row for row in events
+                    if row["event_type"] == "BUILD_ATTEMPT_FINISHED"
+                    and row["payload"].get("prepared_event_id") == prepared_id}
+        unresolved = sorted(key for key in started - set(finished) if key)
+        if unresolved:
+            return {"status": "HELD_UNRESOLVED_ATTEMPT", "attempt_ids": unresolved,
+                    "accepted_workpacks": [],
+                    "next_action": "RECONCILE_EFFECTS", "execution_started": False,
+                    "harness_e2e_verified": False}
+        accepted = sorted({row["payload"]["workpack_id"] for row in finished.values()
+                           if row["payload"].get("status") == "ACCEPTED"
+                           and row["payload"].get("workpack_id") in task_ids})
         workspace = Path(scope["workspace_root"]).resolve()
-        accepted = []
         used = 0
         for task in plan["workpacks"]:
+            if task["workpack_id"] in accepted:
+                continue
             if task.get("executor") != "AGENT":
                 raise ValueError("experimental controller only dispatches AGENT workpacks")
             adapter = (self.adapter_factory(task, scope) if self.adapter_factory
