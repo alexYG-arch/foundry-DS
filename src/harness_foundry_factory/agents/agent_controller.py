@@ -110,6 +110,15 @@ class AgentBuildController:
                            if row["payload"].get("status") == "ACCEPTED"
                            and row["payload"].get("workpack_id") in task_ids})
         workspace = Path(scope["workspace_root"]).resolve()
+        for row in finished.values():
+            if row["payload"].get("status") != "ACCEPTED":
+                continue
+            for artifact in row["payload"].get("artifacts", {}).values():
+                path = (workspace / artifact.get("path", "")).resolve()
+                if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != artifact.get("sha256"):
+                    return {"status": "HELD_ACCEPTED_ARTIFACT_DRIFT", "workpack_id": row["payload"].get("workpack_id"),
+                            "artifact": artifact.get("path"), "execution_started": False,
+                            "next_action": "EXPLICIT_REBUILD_PLAN", "harness_e2e_verified": False}
         used = 0
         for task in plan["workpacks"]:
             if task["workpack_id"] in accepted:
