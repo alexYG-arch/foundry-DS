@@ -1,9 +1,9 @@
 # Agent Transport 与 Sandbox 规格 v2
 
 - 版本：`AGENT_TRANSPORT_SPEC_V2`
-- 状态：`P1_PARTIAL_IMPLEMENTED`（Seatbelt + Plan 1.3 编译；Scope/runtime 待做）
+- 状态：`P1_FIXTURE_E2E_PASS`（Seatbelt + Plan/Scope 1.3 + fixture AGENT dispatch；controller integration 待做）
 - 日期：2026-10-26
-- 基线：`eb01bc0`，61 模块 / 916 项门禁（P1 部分实现）
+- 基线：`eb01bc0`，62 模块 / 919 项门禁（P1 fixture E2E 通过）
 - 配套方案：`Harness_Foundry_升级方案_v2_DeepSeek与无Codex.md`
 - 取代：`AGENT_ADAPTER_CONTRACT.md` v1 的 M1/M2 适配器部分
 - 保留：`ADR-0001` Scope 版本、`ADR-0003` agents 包；`ADR-0002` 的“Codex sandbox 依赖”被取代

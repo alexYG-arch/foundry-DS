@@ -256,7 +256,7 @@ Plan 1.3 只对**新计划**生效；1.0–1.2 的 `CODEX`/`LOCAL` 语义不变�
 - 1.3 继续允许 1.1/1.2 的 environment/effects 与 1.2 的 `resource_profile_ref`；
 - 旧 1.0–1.2 不自动迁移。
 
-**实现边界（P1 当前）**：本文只定义编译形状。Scope 1.3、agent dispatch 与 `advance-build` 的运行时支持仍在 P1/P2；在运行时完成前，1.3 计划只能 `compile-build-plan`，不能当作可执行授权。
+**实现边界（P1 当前）**：编译形状、Scope 1.3 校验和 fixture AGENT dispatch 已通过（`agents/scope13.py` + `tests/test_agent_scope13.py`）；`advance-build` 的 controller 集成仍未完成。当前 1.3 可用于 fixture/离线验证，不能当作生产可执行授权。
 
 ## 既有只读编译接口
 
