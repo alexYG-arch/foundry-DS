@@ -1,7 +1,7 @@
 # Agent Adapter Contract（M0）
 
 - 版本：`AGENT_ADAPTER_CONTRACT_V1`
-- 状态：`M1_1_IMPLEMENTED`（M0 契约；M1.0 扁平模块 + M1.1 `agents/` 包均已落地）
+- 状态：`M2_0_PROFILE_IMPLEMENTED`（M0 契约；M1.0/M1.1 包已落地；M2.0 declarative profile 已落地，dispatch 待 M2.1）
 - 日期：2026-10-26
 - 关联：`ADR-0001`（Scope 版本）、`ADR-0002`（沙箱边界）、`docs/CODING_COMMAND_PROTOCOL.md`
 - 非目标：本契约不定义模型调用协议、不实现第二个真实沙箱、不改变 Plan 1.0–1.2 语义。
@@ -107,7 +107,7 @@ class SandboxProvider(Protocol):
 
 1. golden fixture：当前 Codex 事件流（从现有测试导出）归一化后逐条一致；原始字节不变。
 2. 负向：可执行缺失、probe 失败、未知事件超限、无 usage、协议错误、沙箱不可用、`none`+network 组合。
-3. 行为不变：M1.1 下 1.2 计划端到端结果与改造前一致；888 门禁全绿。
+3. 行为不变：M1.1 下 1.2 计划端到端结果与改造前一致；897 门禁全绿。
 4. 无模型 E2E：fixture agent 写出声明产物，`advance-build` 完成实现→独立检查→接受；进程树中无 `codex`（除显式 `codex-sandbox`）。
 5. Readback 必须显示 `adapter_id`、`adapter_version`、`sandbox_provider`、`usage_source`；`UNKNOWN` 不能显示成 0。
 
@@ -117,3 +117,13 @@ class SandboxProvider(Protocol):
 - 声明式 profile 的 `schema_version` 独立于本契约；
 - adapter 版本是契约实现版本，不是 Codex/Claude 的产品版本；
 - 任何“支持任意 agent”的声明，必须有至少一个非 Codex 的真实 probe + 一条无模型 E2E 作为证据。
+
+## 9. M2.0 declarative profile（已实现）
+
+`agents/profile.py` 提供 `DeclarativeProfile` / `DeclarativeAdapter`：
+
+- 严格 JSON profile：固定字段、capabilities、probe argv/regex、invocation argv/stdin、event_map、exit_map、`unknown_event=RETAIN`；
+- 只允许 `{executable}`、`{workspace}`、`{prompt_file}`、`{prompt}` 占位符，不经 shell；
+- `probe()` 在受控子进程里执行 argv 并校验 regex；`render()` 只渲染 argv，不启动模型；
+- `map_event()` / `classify_exit()` 做纯映射，未知事件为 `UNKNOWN`；
+- `run()` 仍抛 `NotImplementedError`：dispatch、fixture agent、`none` provider 是 M2.1，不得把 M2.0 说成“第二个适配器已可用”。
