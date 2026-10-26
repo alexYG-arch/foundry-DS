@@ -87,6 +87,8 @@ class AgentControllerTests(unittest.TestCase):
         self.assertEqual([row["event_type"] for row in events[-2:]],
                          ["BUILD_ATTEMPT_STARTED", "BUILD_ATTEMPT_FINISHED"])
         self.assertFalse(result["harness_e2e_verified"])
+        self.assertEqual(result["agent_sandbox_enforcement"], "NATIVE")
+        self.assertEqual(result["task_sandbox_provider"], "seatbelt")
 
     def test_advance_build_routes_13_prepared_event_to_agent_controller(self):
         result = apply_build_request("advance-build", {

@@ -168,7 +168,9 @@ class AgentBuildController:
                            "artifacts": artifacts, "artifact_error": artifact_error,
                            "verification": verification,
                            "effects": {"status": "NOT_OBSERVED", "external_effects_verified": False},
-                           "result": result, "workpack_accepted": passed}
+                           "result": result, "workpack_accepted": passed,
+                           "agent_sandbox_enforcement": getattr(getattr(adapter, "capabilities", None), "sandbox", "UNKNOWN"),
+                           "task_sandbox_provider": getattr(self.provider, "provider_id", "UNKNOWN")}
                 self.store.append_batch(self.program_id, [{"event_type": "BUILD_ATTEMPT_FINISHED",
                     "payload": payload}], expected_revision=len(events),
                     idempotency_key=attempt_id + ":finish",
@@ -193,4 +195,6 @@ class AgentBuildController:
                             "harness_e2e_verified": False}
         return {"status": "PLAN_CHECKS_ACCEPTED", "accepted_workpacks": accepted,
                 "attempts_used": used, "agent_controller": "EXPERIMENTAL_1_3",
+                "agent_sandbox_enforcement": "NATIVE",
+                "task_sandbox_provider": getattr(self.provider, "provider_id", "UNKNOWN"),
                 "harness_e2e_verified": False}
