@@ -68,9 +68,9 @@ def main(argv=None):
         elif args.command == "compile-build-plan":
             from .build_plan import compile_build_plan, validate_compiled_build_plan
             request = _load_request(args.request)
-            if set(request) != {"requirement_ir", "plan"}:
-                raise RequestValidationError("compile-build-plan requires exactly requirement_ir and plan")
-            result = compile_build_plan(request["requirement_ir"], request["plan"])
+            if set(request) not in ({"requirement_ir", "plan"}, {"requirement_ir", "plan", "design_record"}):
+                raise RequestValidationError("compile-build-plan requires requirement_ir, plan and optional design_record")
+            result = compile_build_plan(request["requirement_ir"], request["plan"], request.get("design_record"))
             validate_compiled_build_plan(request["requirement_ir"], request["plan"], result)
         elif args.command == "read-history":
             from .legacy_history import read_history

@@ -381,3 +381,7 @@ Plan 1.2 资源检查使用已有 `FOUNDRY_SCRATCH_DIR` 和
 需要精确保留额度的同 Program 重新绑定，可在现有 prepare 请求中显式给出 `rebind_from`，
 按[CLI 接续说明](GENERIC_BUILD_CLI.md#显式同-program-接续)展示累计预算、接受处理和新范围。
 它不自动继承旧权限，不改变普通新建行为，也不提供跨库迁移。
+
+## 可选 DDR 检查
+
+`compile-build-plan` 的 request 可带可选 `design_record`（DDR 对象）。存在时先跑 D4a 结构检查；FAIL 返回 `BUILD_DESIGN_RECORD_FAILED`，不生成编译结果。DDR 是设计检查，不是授权或执行。

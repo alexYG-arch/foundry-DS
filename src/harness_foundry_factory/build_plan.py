@@ -14,6 +14,7 @@ from pathlib import PurePosixPath
 from typing import Any, Mapping
 
 from .build_types import RequestValidationError, SAFE_ID_RE, canonical_json
+from .design_record import check as check_design_record
 
 
 def _require(condition: bool, code: str, message: str) -> None:
@@ -335,9 +336,13 @@ def _validate_artifact_revisions(workpacks: Mapping[str, Any], artifacts: Mappin
                      "an old file version must be consumed before its replacement; add an ordering dependency")
 
 
-def compile_build_plan(requirement_ir: Mapping[str, Any], plan: Mapping[str, Any]) -> dict[str, Any]:
+def compile_build_plan(requirement_ir: Mapping[str, Any], plan: Mapping[str, Any], design_record=None) -> dict[str, Any]:
     """Compile only declarations, with no fixed stages, business schemas or hashes."""
     validate_build_plan(requirement_ir, plan)
+    if design_record is not None:
+        ddr = check_design_record(design_record, {"requirement_ir": requirement_ir, "plan": plan})
+        _require(ddr["status"] == "PASS", "BUILD_DESIGN_RECORD_FAILED",
+                 "design record check failed: " + str(ddr.get("findings", []))[:1200])
     result = {
         "schema_version": "1.0", "status": "PLAN_COMPILED_NOT_AUTHORIZED",
         "requirement_binding": {"program_id": requirement_ir["program_id"], "revision": requirement_ir["revision"],

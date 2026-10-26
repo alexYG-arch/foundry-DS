@@ -109,6 +109,11 @@ class BuildPlanTests(unittest.TestCase):
             self.compile()
         self.assertEqual(caught.exception.details["reason_code"], code)
 
+    def test_design_record_is_checked_before_compile(self):
+        with self.assertRaises(RequestValidationError) as caught:
+            compile_build_plan(self.ir, self.plan, design_record={})
+        self.assertEqual(caught.exception.details["reason_code"], "BUILD_DESIGN_RECORD_FAILED")
+
     def test_plan_13_agent_workpack_compiles(self):
         self.plan["schema_version"] = "1.3"
         self.plan["workpacks"][0]["executor"] = "AGENT"
