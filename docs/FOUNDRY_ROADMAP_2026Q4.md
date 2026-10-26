@@ -1,6 +1,6 @@
 # Foundry 路线图 v2：DeepSeek 全形态 + 无 Codex 完整构建
 
-- 状态：`PROPOSAL_FOR_REVIEW`
+- 状态：`IN_PROGRESS`
 - 日期：2026-10-26
 - 基线：`repo/` commit `eb01bc0`，公开门禁 **67 模块 / 935 项**
 - 方案：`Harness_Foundry_升级方案_v2_DeepSeek与无Codex.md`（项目计划目录；本仓库 docs 不复制该文件）
