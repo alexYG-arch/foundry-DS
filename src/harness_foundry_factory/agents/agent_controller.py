@@ -49,9 +49,11 @@ class AgentBuildController:
                                       key_file=definition.get("key_file"))
         if definition["adapter"] == "deepseek-api":
             model = definition.get("model", {}).get("name", "deepseek-chat")
+            insecure_hosts = ("host.lima.internal",) if "host.lima.internal" in definition["base_url"] else ()
             return DeepseekApiAdapter(base_url=definition["base_url"], model=model,
                                       key_file=definition.get("key_file"), provider=self.provider,
-                                      allow_insecure_localhost=definition["base_url"].startswith("http://127.0.0.1"))
+                                      allow_insecure_localhost=definition["base_url"].startswith("http://127.0.0.1"),
+                                      allow_insecure_hosts=insecure_hosts)
         raise ValueError(f"unsupported agent adapter: {definition['adapter']}")
 
     @staticmethod

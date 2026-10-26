@@ -25,15 +25,16 @@ class DeepseekApiAdapter:
     """
 
     def __init__(self, *, base_url, model, key_file=None, provider=None,
-                 timeout_seconds=120, max_turns=8, allow_insecure_localhost=False):
+                 timeout_seconds=120, max_turns=8, allow_insecure_localhost=False,
+                 allow_insecure_hosts=()):
         parsed = urllib.parse.urlparse(base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("base_url must be an absolute HTTP(S) URL")
-        if parsed.scheme != "https" and parsed.hostname not in {"127.0.0.1", "::1", "localhost"}:
-            raise ValueError("plain HTTP is only allowed for localhost")
-        if parsed.scheme != "https" and not allow_insecure_localhost:
-            # Explicit opt-in keeps the default honest even for localhost.
-            raise ValueError("allow_insecure_localhost must be true for local HTTP")
+        allowed_plain = {"127.0.0.1", "::1", "localhost", *allow_insecure_hosts}
+        if parsed.scheme != "https" and parsed.hostname not in allowed_plain:
+            raise ValueError("plain HTTP is only allowed for explicit local/private hosts")
+        if parsed.scheme != "https" and not allow_insecure_localhost and not allow_insecure_hosts:
+            raise ValueError("plain HTTP requires explicit insecure-host opt-in")
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.key_file = Path(key_file) if key_file is not None else Path.home() / ".dsh/foundry/deepseek.key"

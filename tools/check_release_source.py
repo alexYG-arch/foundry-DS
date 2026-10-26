@@ -85,6 +85,7 @@ REQUIRED_MODULES = (
     "test_carrier_instructions",
     "test_import_design_case",
     "test_egress_proxy",
+    "test_host_gateway",
     "test_check_design_record",
 )
 
