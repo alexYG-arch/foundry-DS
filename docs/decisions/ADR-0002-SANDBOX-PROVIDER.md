@@ -41,3 +41,10 @@
 - 载体解绑件 §1.6 第 2 条“没有安装 Codex 的机器跑公开门禁全绿”改为“跑 fixture E2E（`none` provider）全绿”，并明确它不等于生产可用。
 - 计划 M2 的“第二个适配器”可以落地；但文档必须写“Codex 仍是可选沙箱依赖”，不能写“完全去 Codex”。
 - 第二个真实沙箱 provider（seatbelt/bwrap）作为独立 WP，需重新评估网络、权限和跨平台证据，不在本阶段偷偷降级。
+
+## M2.1a 结果（2026-10-26）
+
+- `agents/sandbox_none.py` 已实现 `NoneSandboxProvider`，仅 `allow_unsandboxed_agent=true` + `network NONE` 时 probe PASS；
+- `DeclarativeAdapter.run()` 必须显式传入 provider/executable，否则 `NotImplementedError`；
+- fixture dispatch 已验证会写声明产物，且 provider 不声明 acceptance；
+- controller `advance-build` E2E 仍是 M2.1b；生产 provider 未变。

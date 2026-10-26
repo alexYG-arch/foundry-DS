@@ -1,7 +1,7 @@
 # Agent Adapter Contract（M0）
 
 - 版本：`AGENT_ADAPTER_CONTRACT_V1`
-- 状态：`M2_0_PROFILE_IMPLEMENTED`（M0 契约；M1.0/M1.1 包已落地；M2.0 declarative profile 已落地，dispatch 待 M2.1）
+- 状态：`M2_1A_IMPLEMENTED`（M0 契约；M1.0/M1.1 包、M2.0 profile、M2.1a None provider + fixture dispatch 已落地；controller E2E 待 M2.1b）
 - 日期：2026-10-26
 - 关联：`ADR-0001`（Scope 版本）、`ADR-0002`（沙箱边界）、`docs/CODING_COMMAND_PROTOCOL.md`
 - 非目标：本契约不定义模型调用协议、不实现第二个真实沙箱、不改变 Plan 1.0–1.2 语义。
@@ -126,4 +126,4 @@ class SandboxProvider(Protocol):
 - 只允许 `{executable}`、`{workspace}`、`{prompt_file}`、`{prompt}` 占位符，不经 shell；
 - `probe()` 在受控子进程里执行 argv 并校验 regex；`render()` 只渲染 argv，不启动模型；
 - `map_event()` / `classify_exit()` 做纯映射，未知事件为 `UNKNOWN`；
-- `run()` 仍抛 `NotImplementedError`：dispatch、fixture agent、`none` provider 是 M2.1，不得把 M2.0 说成“第二个适配器已可用”。
+- M2.1a 增加 `NoneSandboxProvider`（仅测试、要求 `allow_unsandboxed_agent=true` 且 network=NONE）与 fixture dispatch；没有显式 provider 时 `run()` 仍抛 `NotImplementedError`。controller E2E 是 M2.1b，不得把 M2.1a 说成“第二个适配器已可用于生产”。

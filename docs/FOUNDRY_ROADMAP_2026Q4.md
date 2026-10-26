@@ -31,13 +31,13 @@
 | D1 DDR | `docs/design/DESIGN_DECISION_RECORD.md`、`design_record.schema.json` | 两个真实需求能填满；简单任务可只填 S1/S2/S5/S6 |
 | D4a 检查 | `tools/check_design_record.py` + 9 个负例测试 | 只在现有 Plan/Scope 数据上判；不依赖 1.4 |
 
-**当前进度（2026-10-26）**：M0、M1.0/M1.1、D0/D1/D4a、**M2.0 declarative profile loader** 已落盘；公开门禁 **59 模块 / 901 项全过**；M2.1a iOS env 检查器已加；下一步 fixture/None provider。
+**当前进度（2026-10-26）**：M0、M1.0/M1.1、D0/D1/D4a、**M2.0 declarative profile loader** 已落盘；公开门禁 **60 模块 / 905 项全过**；M2.0 + M2.1a 已落盘（profile、None provider、fixture dispatch）；下一步 M2.1b controller E2E。
 
 ### 第 2 阶段：第二个适配器与 Scope 1.3（5–7 周）
 
 | 工作 | 产物 | 门 |
 |---|---|---|
-| M2 声明式适配器 + fixture agent | **M2.0 已完成**：`DeclarativeProfile`/`DeclarativeAdapter` 加载、probe、argv 渲染、事件/exit 映射；**M2.1 待做**：dispatch、fixture agent、`none` provider | 无模型 E2E：实现→独立检查→接受；进程树无 codex（除 codex-sandbox） |
+| M2 声明式适配器 + fixture agent | **M2.0/M2.1a 已完成**：profile、probe、argv 渲染、事件/exit 映射、`NoneSandboxProvider`、fixture dispatch；**M2.1b 待做**：controller `advance-build` E2E | 无模型 E2E：实现→独立检查→接受；进程树无 codex（除 codex-sandbox） |
 | M2.5 载体 profile | carrier profile、host_tools 能力名映射、capability `carriers` | carrier=claude-code 的 fixture 构建；不支持组合 fail-closed |
 | M3 Plan/Scope 1.3 | 版本校验、Readback、错误码、兼容测试 | 旧 1.0–1.2 双跑；1.3 端到端；`scope_version` 缺失/错配拒绝 |
 | M1.1 包化 | `agents/` 包 + 发布器/import guard/分发测试 | **已完成**：发布包含 `agents/`，旧 shim 不变，57/888 全绿 |
@@ -99,6 +99,6 @@
 ## 4. 当前状态与下一步
 
 - 已完成：ADR-0001/0002/0003、M0 契约、M1.0 seam（两个模块 + 5 个测试）、D0 六案例、D1 模板/schema、D4a 工具 + 9 个测试、移动端预注册/检查表/README/runbook/材质修订。
-- 已通过：完整 58 模块 / 897 项门禁（`build/source-checks-m2b.json`）。
+- 已通过：完整 58 模块 / 897 项门禁（`build/source-checks-m2c.json`）。
 - 已装：标准 Flutter 3.35.3、JDK 21、Android platform-tools/platform/build-tools、Codex CLI 0.164.0。待环境：Xcode license（需用户 sudo）、CocoaPods、Android AVD、首次 Gradle 构建。
 - 下一步：M2.1 fixture agent + `none` provider + 无模型 E2E；移动端先做设计变异层，不急着冻结 70 次。

@@ -192,15 +192,17 @@ class DeclarativeProfile:
 
 
 class DeclarativeAdapter:
-    """Data-only adapter; probe/render/map are implemented, dispatch is M2.1+."""
+    """Declarative adapter; dispatch requires an explicit provider and executable."""
 
-    def __init__(self, profile: DeclarativeProfile):
+    def __init__(self, profile: DeclarativeProfile, *, executable=None, provider=None):
         self.profile = profile
         self.capabilities = profile.capabilities
+        self.executable = Path(executable) if executable is not None else None
+        self.provider = provider
 
     @classmethod
-    def load(cls, path):
-        return cls(DeclarativeProfile.load(path))
+    def load(cls, path, **kwargs):
+        return cls(DeclarativeProfile.load(path), **kwargs)
 
     def probe(self, executable: Path | None = None) -> dict:
         if executable is None:
@@ -247,5 +249,24 @@ class DeclarativeAdapter:
         return self.profile.exit_map.get(key, "FAIL")
 
     def run(self, request, *, before_dispatch, **hooks):
-        """M2.1 will dispatch through a SandboxProvider; M2.0 never starts a model."""
-        raise NotImplementedError("declarative dispatch is M2.1")
+        """Render and dispatch through an explicitly supplied SandboxProvider.
+
+        No provider means no dispatch. M2.1a only supports a test provider; the
+        controller integration remains M2.1b.
+        """
+        if self.provider is None or self.executable is None:
+            raise NotImplementedError("declarative dispatch requires executable and provider")
+        scope = getattr(request.command, "scope", request.command)
+        cwd = Path(getattr(scope, "cwd", "")).resolve()
+        rendered = self.render(executable=self.executable, workspace=str(cwd),
+                               prompt=request.prompt, prompt_file="")
+        from harness_foundry_factory.local_process import LocalCommand
+        command = LocalCommand.prepare(
+            argv=rendered["argv"], cwd=str(cwd),
+            read_roots=getattr(scope, "read_roots", (cwd,)),
+            write_roots=getattr(scope, "write_roots", (cwd,)),
+            timeout_seconds=getattr(scope, "timeout_seconds", 1800),
+            environment=getattr(scope, "environment", None),
+        )
+        return self.provider.run(command, before_dispatch=before_dispatch,
+                                 stdin=rendered["stdin"], **hooks)
