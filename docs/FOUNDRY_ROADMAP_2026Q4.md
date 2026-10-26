@@ -36,7 +36,16 @@
 - 确认 DSH Desktop `HANDOFF` 为 A 的 MVP，`ATTACH` 为 B 的 `NOT_VERIFIED`；
 - 确认 seatbelt/bwrap 是 A 的硬前提；A 失败只标 `BLOCKED_SANDBOX`，B 继续，不许降级 `none`。
 
-**退出**：无未决“Codex 是否可选”；无未决“Desktop attach 是否承诺”。
+**P0 probe 结果（2026-10-26）**
+
+| 项 | 结果 |
+|---|---|
+| A seatbelt | **PASS**（danger-full-access 外层）；写域/网络限制通过；workspace-write 嵌套 EPERM |
+| B `dsh web` | UI + auth cookie PASS；猜测 `/api/*` 404；attach `NOT_VERIFIED` |
+| B `dsh headless` | transport PASS；`session/status/final` 已取到；**MISSING_CREDENTIAL** |
+| Desktop profile | Electron 独占，CLI 不能 boot |
+
+**退出**：A/B 边界签署；A sandbox 已证；**凭据来源仍是 P2 前置**；B attach `NOT_VERIFIED`。
 
 ### P1 A 的无 Codex 基础（5–7 人日；B probe 并行）
 
@@ -51,6 +60,7 @@
 ### P2 A 的 DSH Desktop/Headless 垂直切片（5–7 人日；B probe 继续）
 
 - `DshHeadlessTransport`：probe、NDJSON、session、usage、错误码；
+- 解决 DSH headless 凭据来源（env/credentials service；禁止复制/内联 key）；
 - `DshDesktopTransport(HANDOFF)`：桌面 session → `dsh headless --session-id`，锁检查，Readback；
 - `dsh web --no-open --port 0` + `/api` probe（只记录，不猜）；
 - 真实 DSH 任务：实现 → 独立检查 → 接受。
@@ -113,8 +123,8 @@ P0 规格/宿主
 - 已完成：v1 的 Phase 0、M0、M1.0/M1.1、D0/D1/D4a、M2.0/M2.1a、iOS/Android 环境；
 - 未完成：DeepSeek transport、Plan/Scope 1.3、seatbelt/bwrap、无 Codex E2E、carrier、设计变异、70 次；
 - 门禁：60 模块 / 905 项 PASS；
-- 关键事实：DSH `headless` 支持 `--json/--session-id`；`desktop` profile 由 Electron 独占；DSH session 在 `$DSH_HOME/sessions` 带锁；DSH 会话内 `sandbox-exec` 嵌套失败；
-- 当前 `repo/` commit `eb01bc0`；本方案/spec 尚未实现。
+- 关键事实：A seatbelt 在外层 PASS；B `dsh web` UI 启动但 attach API 未找到；`dsh headless` transport PASS 但 **MISSING_CREDENTIAL**；`desktop` profile 由 Electron 独占；DSH session 带锁；
+- 当前 `repo/` commit `b3ffbc7`；本方案/spec 尚未实现；P0 结果已入 `work/evidence/p0/`。
 
 ## 5. 下一步
 

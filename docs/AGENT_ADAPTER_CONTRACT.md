@@ -168,12 +168,28 @@ export DSH_HOME="<scope.dsh_home>"
 - 不把 `--help` 通过当成模型可用；
 - 认证/模型可用性由首个真实运行验证，失败码 `DSH_AUTH_UNAVAILABLE` / `DSH_MODEL_UNAVAILABLE`。
 
-### 3.4 NDJSON 解析
+**P0 实测**：headless 的 transport 可用，但真实运行返回 `MISSING_CREDENTIAL`：CLI 没有自动继承 Desktop Models 页保存的凭据，需要 `DEEPSEEK_API_KEY` 环境或 credentials service。Desktop handoff 前必须解决同一个凭据来源，否则 handoff 只能到 `BLOCKED_CREDENTIAL`。
 
-- `--json` 的 NDJSON 事件 schema 以真实 probe 为准；M0 必须记录一份最小真实样本（不含敏感信息）；
-- 在 schema 冻结前，adapter 只做“保留原始行 + 宽松映射”，未知类型 `UNKNOWN`；
-- 最终消息与 run 结束事件分开记录；
-- 退出码、事件流、最终消息三者不一致时 `DSH_TRANSPORT_INCONSISTENT`，fail-closed。
+### 3.4 NDJSON 解析（P0 已取到最小样本）
+
+2026-10-26 用 `dsh --profile headless --json` 取到的真实事件类型：
+
+```json
+{"type":"session","sessionId":"session-…","cwd":"…"}
+{"type":"status","phase":"turn_start","turn":1}
+{"type":"status","phase":"step_start","turn":1,"step":1}
+{"type":"status","phase":"step_end","turn":1,"step":1}
+{"type":"status","phase":"turn_end","turn":1,
+ "reason":{"kind":"error","error":{"message":"…","code":"MISSING_CREDENTIAL"}}}
+{"type":"final","text":""}
+```
+
+- 这是当前最小 schema，不是永久契约；adapter 必须保留未知类型/字段；
+- `session` 是会话 id 的权威来源；`status.turn_end.reason.kind=error` 是失败证据；
+- `final.text` 可能是空串，不能把“有 final”当成功；
+- 退出码、`turn_end`、`final` 三者不一致时 `DSH_TRANSPORT_INCONSISTENT`；
+- 认证错误（`MISSING_CREDENTIAL`）是环境/凭据问题，不是模型失败，必须单独归类；
+- 原始 NDJSON 落盘，不覆盖。
 
 ### 3.5 Session
 
@@ -206,6 +222,7 @@ export DSH_HOME="<scope.dsh_home>"
    - 同一 `DSH_HOME`；
    - `session.lock` 未被 GUI 持有；
    - session 版本可读；
+   - headless 可用的模型凭据（`DEEPSEEK_API_KEY` 或 credentials service；缺失则 `BLOCKED_CREDENTIAL`）；
 3. Foundry 调用 `dsh --profile headless --session-id <id> --json` 继续任务；
 4. Readback 显示 `desktop_session_id`、`dsh_home`、`app_version`、`handoff=true`；
 5. 完成后桌面可打开该 session 供人工审阅；GUI 与 headless 不得同时写。
@@ -474,6 +491,7 @@ prompt + tools
 | DSH Desktop attach API（B） | `NOT_VERIFIED` | P0/P2.1 probe；不实现前标 NOT_VERIFIED；不影响 A |
 | DSH headless NDJSON schema | 未冻结 | M0 真实样本后冻结 |
 | DSH `--session-id` 并发/锁行为 | 部分（有 session.lock） | 必须实测；失败 `DSH_SESSION_LOCKED` |
+| DSH headless 凭据来源 | **P0 实测 `MISSING_CREDENTIAL`** | 明确 env/credentials service；Desktop handoff 必须先解决 |
 | `sandbox-exec` 在 DSH 外层 | 待验证 | A 前置；失败则 A `BLOCKED_SANDBOX`，B 继续 |
 | `bwrap` macOS | 不存在 | 仅 Linux |
 | DeepSeek API 工具 schema | 待 probe | 不假设永久稳定 |
