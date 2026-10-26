@@ -1,7 +1,7 @@
 # Agent Transport 与 Sandbox 规格 v2
 
 - 版本：`AGENT_TRANSPORT_SPEC_V2`
-- 状态：`P2_VM_GATEWAY_LIVE`（完整 1.3 CLI/真实 DSH、旧事件 read-build ACCEPTED、retry/budget；carrier 文档与 AGENTS/CLAUDE 指令发现已解绑；返修/egress/能力包 carriers 待做）
+- 状态：`P2_VM_NFT_GATEWAY`（完整 1.3 CLI/真实 DSH、旧事件 read-build ACCEPTED、retry/budget；carrier 文档与 AGENTS/CLAUDE 指令发现已解绑；返修/egress/能力包 carriers 待做）
 - 日期：2026-10-26
 - 基线：`eb01bc0`，70 模块 / 949 项门禁（P2 full-flow live + old-event controller）
 - 配套方案：`Harness_Foundry_升级方案_v2_DeepSeek与无Codex.md`
