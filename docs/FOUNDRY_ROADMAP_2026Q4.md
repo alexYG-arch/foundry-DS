@@ -132,7 +132,7 @@ P0 规格/宿主
 - 未完成：controller `advance-build` 的 1.3 集成、真实 DSH/API 运行、carrier、设计变异、70 次；
 - 门禁：63 模块 / 923 项 PASS；
 - 关键事实：A seatbelt 在外层 PASS；B `dsh web` UI 启动但 attach API 未找到；`dsh headless` transport PASS 但 **MISSING_CREDENTIAL**；`desktop` profile 由 Electron 独占；DSH session 带锁；
-- 当前 `repo/` commit 待提交；P1 fixture + P2 DSH transport scaffold 已实现；证据在 `work/evidence/p1/`、`work/evidence/p2/`。
+- 当前 `repo/` commit `99b8027`；P1 fixture + P2 DSH transport scaffold 已实现；证据在 `work/evidence/p1/`、`work/evidence/p2/`。
 
 ## 5. 下一步
 
