@@ -1,7 +1,7 @@
 # Agent Transport 与 Sandbox 规格 v2
 
 - 版本：`AGENT_TRANSPORT_SPEC_V2`
-- 状态：`P2_DSH_LIVE_PASS`（P1 fixture E2E + DSH headless adapter + 真实模型/工具调用；Desktop handoff/controller 待做）
+- 状态：`P2_HEADLESS_LIVE_PASS`（真实 DSH headless + 工具调用 + session handoff + Plan/Scope 1.3 live；GUI-created desktop session/attach/controller 待做）
 - 日期：2026-10-26
 - 基线：`eb01bc0`，63 模块 / 923 项门禁（P2 transport scaffold）
 - 配套方案：`Harness_Foundry_升级方案_v2_DeepSeek与无Codex.md`

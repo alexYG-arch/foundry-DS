@@ -20,11 +20,15 @@ BLOCKED_CREDENTIAL = "BLOCKED_CREDENTIAL"
 class DshHeadlessAdapter:
     """Drive ``dsh --profile headless --json`` and retain its raw events."""
 
-    def __init__(self, executable, dsh_home, *, key_file=None, timeout_seconds=1800):
+    def __init__(self, executable, dsh_home, *, key_file=None, timeout_seconds=1800, session_id=None):
         self.executable = Path(executable)
         self.dsh_home = Path(dsh_home)
         self.key_file = Path(key_file) if key_file is not None else self.dsh_home / "foundry" / "deepseek.key"
         self.timeout_seconds = timeout_seconds
+        if session_id is not None:
+            if not isinstance(session_id, str) or not session_id.strip() or any(c in session_id for c in "\x00\r\n"):
+                raise ValueError("session_id must be nonempty text without NUL/newlines")
+        self.session_id = session_id
         self.capabilities = AgentCapabilities(
             adapter_id="dsh-headless", adapter_version="1", prompt_transport="stdin",
             events="jsonl", usage="UNKNOWN", defaults="EXPLICIT_ONLY",
@@ -100,7 +104,10 @@ class DshHeadlessAdapter:
                     "workload_started": False}
         scope = getattr(request.command, "scope", request.command)
         cwd = Path(getattr(scope, "cwd", "")).resolve()
-        argv = [str(self.executable), "--profile", "headless", "--json", "-"]
+        argv = [str(self.executable), "--profile", "headless", "--json"]
+        if self.session_id is not None:
+            argv.extend(["--session-id", self.session_id])
+        argv.append("-")
         before_dispatch()
         try:
             observed = subprocess.run(

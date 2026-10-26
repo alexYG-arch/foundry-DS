@@ -128,8 +128,8 @@ P0 规格/宿主
 
 ## 4. 当前状态（2026-10-26）
 
-- 已完成：v1 的 Phase 0、M0、M1.0/M1.1、D0/D1/D4a、M2.0/M2.1a、iOS/Android 环境；P1 fixture（Seatbelt/Plan/Scope 1.3）；P2 DSH headless 真实运行 + 工具调用 + 独立检查；
-- 未完成：Desktop handoff、controller `advance-build` 的 1.3 集成、DeepSeek API transport、carrier、设计变异、70 次；
+- 已完成：v1 的 Phase 0、M0、M1.0/M1.1、D0/D1/D4a、M2.0/M2.1a、iOS/Android 环境；P1 fixture（Seatbelt/Plan/Scope 1.3）；P2 DSH headless 真实运行 + 工具调用 + session handoff + Plan/Scope 1.3 live；
+- 未完成：GUI-created Desktop session/attach、controller `advance-build` 的 1.3 集成、DeepSeek API transport、carrier、设计变异、70 次；
 - 门禁：63 模块 / 923 项 PASS；
 - 关键事实：A seatbelt 在外层 PASS；B `dsh web` UI 启动但 attach API 未找到；`dsh headless` 已用 0600 key file 真实跑通（无 key 时仍 `MISSING_CREDENTIAL`）；`desktop` profile 由 Electron 独占；DSH session 带锁；
 - 当前证据在 `work/evidence/p1/`、`work/evidence/p2/`；P1/P2 文档随本次提交更新。
