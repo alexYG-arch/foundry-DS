@@ -2,7 +2,7 @@
 
 - 状态：`PROPOSAL_FOR_REVIEW`
 - 日期：2026-10-26
-- 基线：`repo/` commit `eb01bc0`，公开门禁 **64 模块 / 926 项**
+- 基线：`repo/` commit `eb01bc0`，公开门禁 **65 模块 / 929 项**
 - 方案：`Harness_Foundry_升级方案_v2_DeepSeek与无Codex.md`（项目计划目录；本仓库 docs 不复制该文件）
 - 规格：[AGENT_ADAPTER_CONTRACT.md](AGENT_ADAPTER_CONTRACT.md)（v2）
 
@@ -128,9 +128,9 @@ P0 规格/宿主
 
 ## 4. 当前状态（2026-10-26）
 
-- 已完成：v1 的 Phase 0、M0、M1.0/M1.1、D0/D1/D4a、M2.0/M2.1a、iOS/Android 环境；P1 fixture（Seatbelt/Plan/Scope 1.3）；P2 DSH headless 真实运行 + 工具调用 + session handoff + Plan/Scope 1.3 live；
-- 未完成：GUI-created Desktop session attach、controller `advance-build` 的 1.3 集成、carrier、设计变异、70 次；
-- 门禁：64 模块 / 926 项 PASS；
+- 已完成：v1 的 Phase 0、M0、M1.0/M1.1、D0/D1/D4a、M2.0/M2.1a、iOS/Android 环境；P1 fixture；P2 DSH headless/API live、headless handoff、Plan/Scope 1.3 live、实验性 advance-build 1.3 分支；
+- 未完成：生产 1.3 prepare、GUI-created Desktop session attach、carrier、设计变异、70 次；
+- 门禁：65 模块 / 929 项 PASS；
 - 关键事实：A seatbelt 在外层 PASS；B `dsh web` UI 启动但 attach API 未找到；`dsh headless` 真实跑通；DeepSeek API 真实调用/工具循环 PASS；headless session handoff PASS；GUI `standard` preset handoff `SESSION_PRESET_UNSUPPORTED`；
 - 当前证据在 `work/evidence/p1/`、`work/evidence/p2/`；P1/P2 文档随本次提交更新。
 

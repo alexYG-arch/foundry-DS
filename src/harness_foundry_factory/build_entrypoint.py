@@ -240,6 +240,15 @@ def apply_build_request(command, request, control_db):
             raise RevisionConflictError("re-read current build progress before dispatch")
     store = ControlEventStore(database, storage_format="REVISION_V1")
     if command == "advance-build":
+        current_events = store.list_events(program)
+        prepared = next((row for row in current_events if row["event_id"] == request["prepared_event_id"]
+                         and row["event_type"] == "BUILD_AUTHORIZATION_PREPARED"), None)
+        plan = (prepared or {}).get("payload", {}).get("plan")
+        if isinstance(plan, dict) and plan.get("schema_version") == "1.3":
+            from .agents.agent_controller import AgentBuildController
+            return {**AgentBuildController(store, program).advance(request["prepared_event_id"]),
+                    "program_id": program, "stream_revision": len(store.list_events(program)),
+                    "harness_e2e_verified": False}
         return {**BuildController(store, program).advance(
                     request["prepared_event_id"], advance_mode=request.get("advance_mode", "CONTINUOUS"),
                     codex_handoff=request.get("codex_handoff")),
