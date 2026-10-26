@@ -257,7 +257,7 @@ def collect_files(source_root=ROOT):
                 "target_protocol_version": protocol,
                 "commands": ["version", *commands], "storage_format": "REVISION_V1",
                 "python_requires": ">=3.11", "third_party_python_dependencies": [],
-                "native_receiver": "USER_PROVIDED_CODEX_WITH_EXPLICIT_SCOPE",
+                "native_receiver": "USER_PROVIDED_DSH_OR_DEEPSEEK_WITH_EXPLICIT_SCOPE",
                 "license": "MIT", "repository": "https://github.com/alexYG-arch/Harness_Foundry",
                 "files": sorted([*files, "PACKAGE_MANIFEST.json"]),
                 "acceptance_claimed": False, "execution_authority_granted": False}
