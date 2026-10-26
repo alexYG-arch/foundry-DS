@@ -71,6 +71,7 @@ REQUIRED_MODULES = (
     "test_test_execution",
     "test_release_acceptance_adapters",
     "test_agent_contract",
+    "test_agent_contract_golden",
     "test_check_design_record",
 )
 

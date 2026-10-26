@@ -107,7 +107,7 @@ class SandboxProvider(Protocol):
 
 1. golden fixture：当前 Codex 事件流（从现有测试导出）归一化后逐条一致；原始字节不变。
 2. 负向：可执行缺失、probe 失败、未知事件超限、无 usage、协议错误、沙箱不可用、`none`+network 组合。
-3. 行为不变：M1.0 下 1.2 计划端到端结果与改造前一致；882 门禁全绿。
+3. 行为不变：M1.0 下 1.2 计划端到端结果与改造前一致；885 门禁全绿。
 4. 无模型 E2E：fixture agent 写出声明产物，`advance-build` 完成实现→独立检查→接受；进程树中无 `codex`（除显式 `codex-sandbox`）。
 5. Readback 必须显示 `adapter_id`、`adapter_version`、`sandbox_provider`、`usage_source`；`UNKNOWN` 不能显示成 0。
 
