@@ -82,6 +82,7 @@ REQUIRED_MODULES = (
     "test_api_adapter",
     "test_agent_controller",
     "test_agent_controller_e2e",
+    "test_carrier_instructions",
     "test_check_design_record",
 )
 

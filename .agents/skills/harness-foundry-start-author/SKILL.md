@@ -1,12 +1,12 @@
 ---
 name: harness-foundry-start-author
-description: Operate and validate Harness Foundry or build a Codex-carried Harness from reviewed requirements. Clarify and show a versioned build document for human review, then obtain bounded runtime approval and advance implementation, independent checking, repair and resume without per-Workpack gates. All new builds use the generic route; old Start Package authoring is retired and historical records are read-only.
+description: Operate and validate Harness Foundry or build a carrier-neutral Harness from reviewed requirements. Clarify and show a versioned build document for human review, then obtain bounded runtime approval and advance implementation, independent checking, repair and resume without per-Workpack gates. All new builds use the generic route; old Start Package authoring is retired and historical records are read-only.
 ---
 
 # Harness Foundry generic build
 
 Use `GENERIC_REVIEWED_BUILD_ONLY`. The Skill name is retained for discoverability,
-not to retain the old workflow. Codex handles understanding and implementation;
+not to retain the old workflow. The selected agent (Codex, DSH, or another compatible host) handles understanding and implementation;
 the public CLI controls durable scope, dependencies, execution and acceptance.
 Do not inject video, fixed three-project, Candidate or epoch protocols.
 
@@ -97,7 +97,7 @@ history; no schema/file check proves full semantic correctness or external effec
 
 Read [the public Build CLI](../../../docs/GENERIC_BUILD_CLI.md) completely before
 requests, and [runtime boundaries](../../../docs/GENERIC_BUILD_RUNTIME.md) when
-dispatching or recovering. For ordinary new CODEX builds, omit the model (or use
+dispatching or recovering. For ordinary new agent builds, omit the model (or use
 null), effort and selection policy to follow Codex global defaults; do not ask
 for a separate model choice without a user need. Explicit selections stay fixed;
 comparisons can freeze defaults at preparation. Show the resulting policy and
@@ -209,7 +209,7 @@ implementation record; keep protocol 2.9, Plan 1.2 and resources 1.0, without re
 Do not add these optional resources, credentials, probes or approvals to unrelated
 offline tasks, and do not extend G1/G2 or introduce general restrictions.
 
-## Outer Codex review and repair
+## Outer agent review and repair
 
 The outer delivery session owns one scoped review of the agreed delivery; reuse an
 equivalent review and inspect only changed/affected paths after repairs. A child
@@ -225,7 +225,7 @@ optional improvements do not block delivery. Do not weaken protected checks.
 Current unaccepted writable outputs may be repaired directly; an original Plan's
 valid same-path replacement creates a new candidate. For an accepted producer use
 an applicable native repair route or `request-build-repair`, preserving historical
-PASS and the actual failure history. The latter supports CODEX responsibility and
+PASS and the actual failure history. The latter supports agent responsibility and
 its dependency rebuilds; a fixed LOCAL command does not gain reasoning ability.
 Never edit accepted bytes to manufacture drift or forge a verifier failure.
 
@@ -250,7 +250,7 @@ settlement of `NOT_DISPATCHED` proves that implementation was not dispatched: it
 adds no product repair failure and does not discredit the method, but keeps actual
 attempt/time use. Missing observations or unknown effects keep their native hold.
 
-Before the next CODEX attempt, pass relevant recovered history, selected limits,
+Before the next agent attempt, pass relevant recovered history, selected limits,
 pending rounds and the next method through `codex_handoff` on ONE_ATTEMPT. Bind it
 to the actual receiving workpack and prior attempt IDs; a failing consumer may
 hand off to its producer. A stored summary proves binding, not that a model read
@@ -267,7 +267,7 @@ existing applicable entries. ONE_ATTEMPT does not add a task selector, revoke
 approval, cancel running processes or control other callers/continuous mode.
 Do not fabricate CONTRACT_GAP or command failure to stop the Harness. Native
 independent-assertion repair retains its original contract and budget, separate
-from the selected allowance for Codex's extra finding work.
+from the selected allowance for the agent's extra finding work.
 
 Check the defect's targeted recheck, related regressions and the current version's
 required independent results separately. Development checks awaiting the host are

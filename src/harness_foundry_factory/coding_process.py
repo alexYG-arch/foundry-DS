@@ -55,7 +55,14 @@ def check_configuration_sources(cwd: Path) -> None:
                 raise LocalProcessError(f"additional Codex configuration requires explicit hydration: {path}")
 
 
-def instruction_read_preflight(cwd: Path, read_roots, write_roots=()) -> dict:
+CARRIER_INSTRUCTIONS = {
+    "codex": ("AGENTS.override.md", "AGENTS.md"),
+    "dsh": ("AGENTS.override.md", "AGENTS.md"),
+    "claude": ("CLAUDE.md",),
+}
+
+
+def instruction_read_preflight(cwd: Path, read_roots, write_roots=(), *, carrier="codex") -> dict:
     """Check default instruction discovery against declared reads; never grant them.
 
     User config is excluded and additional project config is rejected by this
@@ -63,13 +70,16 @@ def instruction_read_preflight(cwd: Path, read_roots, write_roots=()) -> dict:
     not all managed configuration or real Codex session readiness. Empty files
     also require a read before the client can decide to skip them.
     """
+    if carrier not in CARRIER_INSTRUCTIONS:
+        raise LocalProcessError(f"unsupported instruction carrier: {carrier}")
+    names = CARRIER_INSTRUCTIONS[carrier]
     cwd = Path(cwd).resolve()
     lineage = [cwd, *cwd.parents]
     root = next((path for path in lineage if (path / ".git").exists()), cwd)
     directories = [client_state_root(), *reversed(lineage[:lineage.index(root) + 1])]
     files = []
     for directory in directories:
-        for name in ("AGENTS.override.md", "AGENTS.md"):
+        for name in names:
             path = directory / name
             try:
                 size = path.stat().st_size
@@ -126,8 +136,9 @@ class CodingCommand:
             raise LocalProcessError("model tools cannot access the client's authentication/state directory")
         check_configuration_sources(self.scope.cwd)
 
-    def instruction_preflight(self):
-        return instruction_read_preflight(self.scope.cwd, self.scope.read_roots, self.scope.write_roots)
+    def instruction_preflight(self, *, carrier="codex"):
+        return instruction_read_preflight(self.scope.cwd, self.scope.read_roots,
+                                          self.scope.write_roots, carrier=carrier)
 
     def argv(self):
         from .coding_defaults import validate_model_service

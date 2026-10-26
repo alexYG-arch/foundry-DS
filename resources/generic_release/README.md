@@ -1,12 +1,12 @@
-# Harness Foundry — generic Codex runtime
+# Harness Foundry — carrier-neutral generic runtime
 
 Product version **1.0.0**; protocol **2.9**. This is the v1.0.0 release runtime.
 It adds declared verification resources, protected product copies, controlled repair
 and single-attempt handoff. Existing published releases remain unchanged.
 
-Open this directory as a Codex project. Its local `harness-foundry-build` Skill
+Open this directory in Codex, DSH, or another compatible agent host. Its local `harness-foundry-build` Skill
 guides a build from clarified requirements and a human-reviewed build document.
-Codex performs reasoning and coding; local deterministic stages and independent
+The selected agent performs reasoning and coding; local deterministic stages and independent
 checks are controlled by the same approved scope. No private author workspace,
 specific business pipeline or external normative sibling is part of this runtime.
 
@@ -25,15 +25,15 @@ start construction merely because all questions or automatic checks are satisfie
 After confirmation it presents a separate bounded runtime scope. That approval
 covers in-scope execution, checking, repair and resume, not publication or expansion.
 No account tokens or author configuration are bundled. Use your own legitimate
-Codex login. Native execution currently targets POSIX hosts and requires explicit
-Codex executable, model/service, local tool and instruction-read bindings; a
+agent login. Native execution currently targets POSIX hosts and requires explicit
+agent executable, model/service, local tool and instruction-read bindings; a
 Python import smoke is not native sandbox acceptance. No silent model fallback.
 
 On macOS, do not put this runtime, inputs, verifier, controller or target in shared
 `/tmp` (including its `/private/tmp` alias). The current native receiver did not
 enforce read-only protection there in an offline probe. Foundry rejects that
 layout before dispatch with `SHARED_TEMP_ISOLATION_UNSUPPORTED`; this is a support
-restriction, not a fix to the underlying Codex sandbox. Use an independent ordinary
+restriction, not a fix to the underlying agent sandbox. Use an independent ordinary
 project directory and check the actual native read/write boundaries before a run.
 
 The agent prepares public CLI requests following [Build CLI](docs/GENERIC_BUILD_CLI.md),
@@ -75,7 +75,7 @@ results support recovery without replay, and successful per-command resources ar
 cleaned after the result is durable. Read the exact permissions and lifecycle in
 [Build CLI](docs/GENERIC_BUILD_CLI.md) before selecting a profile.
 
-The outer Codex session confirms extra findings, merges relevant history and decides
+The outer agent session confirms extra findings, merges relevant history and decides
 whether another repair is useful. The Harness preserves its independent checks and
 budgets. Use the controlled repair entry for eligible accepted producers and optional
 ONE_ATTEMPT handoff when the outer session needs to decide before the next dispatch.

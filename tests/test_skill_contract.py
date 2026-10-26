@@ -40,7 +40,7 @@ class SkillContractTests(unittest.TestCase):
         distribution = (ROOT / "resources/generic_release/SKILL.md").read_text(
             encoding="utf-8"
         )
-        heading = "## Outer Codex review and repair"
+        heading = "## Outer agent review and repair"
         source_rules = source.split(heading, 1)[1].split("## Historical records", 1)[0].strip()
         packaged_rules = distribution.split(heading, 1)[1].split("All new builds", 1)[0].strip()
         self.assertEqual(source_rules, packaged_rules)

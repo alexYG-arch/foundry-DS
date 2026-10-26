@@ -1,11 +1,11 @@
 ---
 name: harness-foundry-build
-description: Build and validate a Codex-carried Harness from reviewed requirements, including a complete PRD or an existing project. Clarify and display a build document for human review before entering Foundry; after concrete runtime approval, implement, verify, repair and resume within scope.
+description: Build and validate a carrier-neutral Harness from reviewed requirements, including a complete PRD or an existing project. Clarify and display a build document for human review before entering Foundry; after concrete runtime approval, implement, verify, repair and resume within scope.
 ---
 
 # Foundry generic build
 
-Use Codex for understanding and implementation, and the packaged CLI for durable
+Use the selected agent (Codex, DSH, or another compatible host) for understanding and implementation, and the packaged CLI for durable
 scope, dependency, execution and independent acceptance control. No fixed business
 pipeline, model self-approval or user-copied Hash is required.
 
@@ -34,7 +34,7 @@ the PRD/development requirements and existing-project compatibility. Do not crea
 a Program/target or start construction before the user's actual confirmation of
 that displayed version. Background PASS and old approvals cannot replace review.
 
-Apply the policy's quality guidance: reuse Codex and Foundry capabilities; only
+Apply the policy's quality guidance: reuse the selected agent and Foundry capabilities; only
 generate the project's missing rules/adapters/local steps. Infer a minimal plan
 from observable behavior and delivery, not a fixed framework or DAG. Check one
 producer/consumer call's data, paths, interpreter and permissions. Preserve access
@@ -60,7 +60,7 @@ and expiry before a real runtime approval. The trusted host authenticates actual
 messages; JSON actor fields do not prove a human decision. No test receiver or
 unrestricted fallback is available through the public CLI.
 
-Advance within that scope without per-Workpack permission requests. Codex may choose
+Advance within that scope without per-Workpack permission requests. The agent may choose
 algorithms, module layout and debugging methods; the controller must validate plan
 changes against the existing contract. Use read-build to recover context. Explain
 contract gaps or infrastructure failures instead of spending implementation retries
@@ -140,11 +140,11 @@ offline tasks, and do not extend G1/G2 or introduce general restrictions.
 
 Choose components from the task's necessary behavior. For an upgrade, keep actual old generated component bytes G separate from accepted product A, current user content C, and new component N. Without reliable G, use ordinary project incremental work. Prepare a candidate separately, apply only declared affected files, and preserve customization. Record lineage only after actual acceptance; do not rewrite accepted artifacts or create another authority ledger.
 
-CODEX subprocesses do not inherit the chat's browser or search tools. ONE_ATTEMPT returns after implementation and verification, not at a mid-attempt review pause. When the agreed workflow uses host tools, a first task may cover explicitly limited automatic preparation; the outer host then performs actual tool calls and independent review; a later LOCAL verification reuses the declared outputs and reads protected evidence. Do not rerun an already completed producer to recreate evidence. For this fixed LOCAL reuse workflow, explicitly select ONE_ATTEMPT and read back the actual attempt after each return. A real host FAIL stays ASSERTION, but the copier cannot repair it: return the evidence to the original producer through its applicable existing repair entry, or to the original host. After a legitimate repair, independently review the affected results and prepare fresh evidence and verification; retain prior records and actual usage. Do not repeatedly dispatch the unchanged copier. Necessary production steps for a real repair remain allowed.
+Agent subprocesses do not inherit the chat's browser or search tools. ONE_ATTEMPT returns after implementation and verification, not at a mid-attempt review pause. When the agreed workflow uses host tools, a first task may cover explicitly limited automatic preparation; the outer host then performs actual tool calls and independent review; a later LOCAL verification reuses the declared outputs and reads protected evidence. Do not rerun an already completed producer to recreate evidence. For this fixed LOCAL reuse workflow, explicitly select ONE_ATTEMPT and read back the actual attempt after each return. A real host FAIL stays ASSERTION, but the copier cannot repair it: return the evidence to the original producer through its applicable existing repair entry, or to the original host. After a legitimate repair, independently review the affected results and prepare fresh evidence and verification; retain prior records and actual usage. Do not repeatedly dispatch the unchanged copier. Necessary production steps for a real repair remain allowed.
 
 Bind host observations to the reviewed output and workflow bytes. Keep visual/semantic judgment independent from the producer; a reviewer name or a self-reported PASS does not authenticate a review. Preserve missing, unknown, or stale evidence as unverified. Use existing verifier snapshots, structured reports, recovery and controller acceptance. Carry cross-Program history in a read-only handoff with real identities, not foreign basis_attempt_ids. This optional workflow adds no requirements to tasks that do not need host tools; G1/G2 and budget rules are unchanged.
 
-## Outer Codex review and repair
+## Outer agent review and repair
 
 The outer delivery session owns one scoped review of the agreed delivery; reuse an
 equivalent review and inspect only changed/affected paths after repairs. A child
@@ -160,7 +160,7 @@ optional improvements do not block delivery. Do not weaken protected checks.
 Current unaccepted writable outputs may be repaired directly; an original Plan's
 valid same-path replacement creates a new candidate. For an accepted producer use
 an applicable native repair route or `request-build-repair`, preserving historical
-PASS and the actual failure history. The latter supports CODEX responsibility and
+PASS and the actual failure history. The latter supports agent responsibility and
 its dependency rebuilds; a fixed LOCAL command does not gain reasoning ability.
 Never edit accepted bytes to manufacture drift or forge a verifier failure.
 
@@ -185,7 +185,7 @@ settlement of `NOT_DISPATCHED` proves that implementation was not dispatched: it
 adds no product repair failure and does not discredit the method, but keeps actual
 attempt/time use. Missing observations or unknown effects keep their native hold.
 
-Before the next CODEX attempt, pass relevant recovered history, selected limits,
+Before the next agent attempt, pass relevant recovered history, selected limits,
 pending rounds and the next method through `codex_handoff` on ONE_ATTEMPT. Bind it
 to the actual receiving workpack and prior attempt IDs; a failing consumer may
 hand off to its producer. A stored summary proves binding, not that a model read
@@ -202,7 +202,7 @@ existing applicable entries. ONE_ATTEMPT does not add a task selector, revoke
 approval, cancel running processes or control other callers/continuous mode.
 Do not fabricate CONTRACT_GAP or command failure to stop the Harness. Native
 independent-assertion repair retains its original contract and budget, separate
-from the selected allowance for Codex's extra finding work.
+from the selected allowance for the agent's extra finding work.
 
 Check the defect's targeted recheck, related regressions and the current version's
 required independent results separately. Development checks awaiting the host are
@@ -246,8 +246,8 @@ arbitrary task renaming or a G1/G2 extension; ordinary preparation stays unchang
 
 ## Global model defaults and interrupted observations
 
-For ordinary new CODEX builds, omit `scope.model` (or set it to null),
-`model_policy` and explicit effort. Preparation defaults to following the Codex
+For ordinary new agent builds, omit `scope.model` (or set it to null),
+`model_policy` and explicit effort. Preparation defaults to following the selected agent
 global model and reasoning effort for each new command, while binding the service
 for the existing runtime approval. Do not add a model-selection question unless
 the user needs a choice. This does not inherit a chat-only selection or change
