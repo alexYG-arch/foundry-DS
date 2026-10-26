@@ -27,6 +27,14 @@
 | **A. Host-native** | 第一交付：Foundry 在 DSH 外层，seatbelt/bwrap 执行；无 Codex 完整构建 | `BLOCKED_SANDBOX`；不授权 `none`；B 继续 |
 | **B. Desktop-native** | 并行 probe DSH 本地 API/工具桥，让 Foundry 在 DSH 内复用其沙箱 | `NOT_VERIFIED`；不阻塞 A |
 
+## 0.2 自主修复，不等人确认
+
+- 技术失败默认自动修复：复现 → 最小修复 → 重跑受影响检查 → 全量门禁 → 记 `repair`；
+- 同一失败最多修 3 次；仍失败才标 `BLOCKED_*`，说明具体条件；
+- 只有 user-owned 门才停：用户决定/合同变更、凭据/权限/账号无法从环境或 DSH credentials service 获得、不可逆动作、外部付费/发布/远程写、需要扩大 Scope；
+- 自动修复不得放宽门禁、跳过独立检查、生产用 `none`、伪造凭据/审批、改写历史或扩大 Scope；
+- 技术失败不升级为“人工确认”；凭据缺失记 `BLOCKED_CREDENTIAL`，不是每轮问用户。
+
 ## 1. 阶段
 
 ### P0 规格与宿主决策（2–3 人日）
@@ -45,7 +53,7 @@
 | B `dsh headless` | transport PASS；`session/status/final` 已取到；**MISSING_CREDENTIAL** |
 | Desktop profile | Electron 独占，CLI 不能 boot |
 
-**退出**：A/B 边界签署；A sandbox 已证；**凭据来源仍是 P2 前置**；B attach `NOT_VERIFIED`。
+**退出**：A/B 边界已记录；A sandbox 已证；**凭据来源仍是 P2 前置**（缺失时 `BLOCKED_CREDENTIAL`，不要求人工确认）；B attach `NOT_VERIFIED`。
 
 ### P1 A 的无 Codex 基础（5–7 人日；B probe 并行）
 
@@ -60,7 +68,7 @@
 ### P2 A 的 DSH Desktop/Headless 垂直切片（5–7 人日；B probe 继续）
 
 - `DshHeadlessTransport`：probe、NDJSON、session、usage、错误码；
-- 解决 DSH headless 凭据来源（env/credentials service；禁止复制/内联 key）；
+- 自动探测/接入 DSH headless 凭据（env/credentials service；禁止复制/内联）；缺失只记 `BLOCKED_CREDENTIAL`；
 - `DshDesktopTransport(HANDOFF)`：桌面 session → `dsh headless --session-id`，锁检查，Readback；
 - `dsh web --no-open --port 0` + `/api` probe（只记录，不猜）；
 - 真实 DSH 任务：实现 → 独立检查 → 接受。
@@ -112,7 +120,7 @@ P0 规格/宿主
 | 新 Plan 无 CODEX | 不得发布 |
 | 新 Scope 无 `codex_executable` 必填 | 不得发布 |
 | 运行路径无 `codex` 进程 | 不得宣称“去 Codex 完成” |
-| 真实 sandbox provider（A） | A `BLOCKED_SANDBOX`；不得用 `none`；B 继续 |
+| 真实 sandbox provider（A） | 自动修复探针/配置；3 次失败 → A `BLOCKED_SANDBOX`；不得用 `none`；B 继续 |
 | Desktop handoff 真实证据 | 只能写 `NOT_VERIFIED` |
 | Reviewer 非 Codex | 不得宣称完整无 Codex |
 | 目标 Harness 无 Codex 默认 | 不得发布 |
@@ -133,4 +141,4 @@ P0 规格/宿主
 3. 按 P1 开始 Plan/Scope 1.3 与 seatbelt provider；
 4. 在 P2 完成后才继续设计 RSI 的运行层。
 
-> 本路线图不授权执行；A 的 sandbox 失败只阻塞 A，B 的 `NOT_VERIFIED` 不阻塞 A。
+> 本路线图不授权执行；技术失败自动修复（最多 3 次），只有 user-owned 门才停；A 的 sandbox 失败只阻塞 A，B 的 `NOT_VERIFIED` 不阻塞 A。

@@ -56,6 +56,22 @@
 
 A 与 B 不互相等待；B 的 probe 失败不改变 A 的验收，A 的 sandbox 失败也不证明 B 不可行。
 
+### 1.3 自主修复与停止
+
+默认不是“人工确认”，而是自动修复：
+
+1. 复现并保留失败证据（命令、exit、stdout/stderr、哈希、最小输入）；
+2. 做最小修复（配置、探针参数、代码、文档、测试，不扩大 Scope）；
+3. 重跑受影响检查，再跑完整门禁；
+4. 记 `repair` 记录；失败尝试保留；
+5. 同一失败最多 3 次修复；仍失败 → `BLOCKED_*`，说明具体条件。
+
+只有 user-owned 门才停：缺少用户决定/合同变更、凭据/权限/账号且环境与 DSH credentials service/钥匙串都无法提供、不可逆动作、外部付费/发布/远程写、需要扩大 Scope。
+
+自动修复不得放宽门禁、跳过独立检查、使用生产 `none`、伪造凭据/审批、改写历史或扩大 Scope。修复若必须改合同，记 `CONTRACT_CHANGE` 并停。
+
+失败分类：`AUTO_FIXED`、`AUTO_RETRY`、`BLOCKED_CREDENTIAL`、`BLOCKED_AUTHORITY`、`BLOCKED_EXTERNAL`、`NEEDS_USER_DECISION`。
+
 ---
 
 ## 2. 通用协议
@@ -479,6 +495,7 @@ prompt + tools
 - fixture：无模型、无网络、无 Codex；
 - real：DSH headless、desktop handoff、API 各一条；
 - negative：缺 executable、auth 失败、session 锁、未知事件、网络拒绝、无 provider、`none` 生产；
+- repair：探针/配置/代码失败自动修复并重跑；只允许 3 次；不把技术失败升级为人工确认；
 - compat：1.2 旧计划只读、1.3 新计划；
 - package：无 Codex 依赖、文档/ Skill/carrier 一致。
 
@@ -492,7 +509,7 @@ prompt + tools
 | DSH headless NDJSON schema | 未冻结 | M0 真实样本后冻结 |
 | DSH `--session-id` 并发/锁行为 | 部分（有 session.lock） | 必须实测；失败 `DSH_SESSION_LOCKED` |
 | DSH headless 凭据来源 | **P0 实测 `MISSING_CREDENTIAL`** | 明确 env/credentials service；Desktop handoff 必须先解决 |
-| `sandbox-exec` 在 DSH 外层 | 待验证 | A 前置；失败则 A `BLOCKED_SANDBOX`，B 继续 |
+| `sandbox-exec` 在 DSH 外层 | 已证 PASS（danger-full-access 外层） | A 可用；workspace-write 嵌套仍 EPERM |
 | `bwrap` macOS | 不存在 | 仅 Linux |
 | DeepSeek API 工具 schema | 待 probe | 不假设永久稳定 |
 | 无 Codex 的 REMOTE_SERVICE | 未实现 | 先 `NONE`/`LOOPBACK`，fail-closed |
