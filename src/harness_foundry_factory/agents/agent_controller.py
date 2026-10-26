@@ -8,6 +8,7 @@ existing acceptance projection until that projection is extended.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -93,10 +94,14 @@ class AgentBuildController:
             if task.get("executor") != "AGENT":
                 raise ValueError("experimental controller only dispatches AGENT workpacks")
             attempt_id = "AGENT-ATTEMPT-" + uuid4().hex
+            owners = prepared.get("task_budget_owners", {}).get(task["workpack_id"], [task["workpack_id"]])
             started = {"attempt_id": attempt_id, "workpack_id": task["workpack_id"],
+                       "job_id": task["job_id"], "prepared_event_id": prepared_id,
+                       "proposal_event_id": prepared.get("proposal_event_id"),
+                       "budget_workpack_ids": owners, "executor": "AGENT",
                        "adapter": task["agent"]["adapter"]}
-            self.store.append_batch(self.program_id, [{"event_type": "BUILD_AGENT_ATTEMPT_STARTED",
-                "payload": {"prepared_event_id": prepared_id, **started}}],
+            self.store.append_batch(self.program_id, [{"event_type": "BUILD_ATTEMPT_STARTED",
+                "payload": started}],
                 expected_revision=len(events), idempotency_key=attempt_id + ":start",
                 created_at=datetime.now(timezone.utc).isoformat(), require_new=True)
             events = self.store.list_events(self.program_id)
@@ -115,16 +120,19 @@ class AgentBuildController:
                     path = (workspace / item["path"]).resolve()
                     if not path.is_file():
                         raise ValueError(f"declared artifact missing: {item['path']}")
-                    artifacts[item["artifact_id"]] = {"path": item["path"], "size": path.stat().st_size}
+                    artifacts[item["artifact_id"]] = {
+                        "path": item["path"], "size": path.stat().st_size,
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
             except (OSError, ValueError) as exc:
                 artifact_error = str(exc)
             verification = [] if artifact_error else self._verify(task, scope, workspace)
             passed = (result.get("status") == "PASS" and artifact_error is None
                       and bool(verification) and all(row["result"].get("status") == "PASS" for row in verification))
-            payload = {**started, "prepared_event_id": prepared_id, "result": result,
+            payload = {**started, "status": "ACCEPTED" if passed else "REJECTED",
                        "artifacts": artifacts, "artifact_error": artifact_error,
-                       "verification": verification, "status": "ACCEPTED" if passed else "REJECTED"}
-            self.store.append_batch(self.program_id, [{"event_type": "BUILD_AGENT_ATTEMPT_FINISHED",
+                       "verification": verification, "effects": {"status": "NOT_OBSERVED", "external_effects_verified": False},
+                       "result": result, "workpack_accepted": passed}
+            self.store.append_batch(self.program_id, [{"event_type": "BUILD_ATTEMPT_FINISHED",
                 "payload": payload}], expected_revision=len(events),
                 idempotency_key=attempt_id + ":finish", created_at=datetime.now(timezone.utc).isoformat(), require_new=True)
             if not passed:

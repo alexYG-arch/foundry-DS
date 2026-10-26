@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from harness_foundry_factory.build_authoring import record_build_plan_proposal
-from harness_foundry_factory.build_entrypoint import apply_build_request
+from harness_foundry_factory.build_entrypoint import apply_build_request, read_build
 from harness_foundry_factory.build_runtime import (
     approve_build_authorization, prepare_build_authorization, record_source_snapshot,
 )
@@ -87,6 +87,8 @@ class FullAgentFlowTests(unittest.TestCase):
         self.assertEqual(result["status"], "PLAN_CHECKS_ACCEPTED", result)
         self.assertEqual(result["agent_controller"], "EXPERIMENTAL_1_3")
         self.assertEqual((self.workspace / "proof.txt").read_text(), "proof.txt")
+        readback = read_build(self.root / "control.sqlite3", self.program)
+        self.assertEqual([row["status"] for row in readback["attempts"]], ["ACCEPTED"], readback)
 
 
 if __name__ == "__main__":

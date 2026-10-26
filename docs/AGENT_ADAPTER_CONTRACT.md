@@ -1,9 +1,9 @@
 # Agent Transport 与 Sandbox 规格 v2
 
 - 版本：`AGENT_TRANSPORT_SPEC_V2`
-- 状态：`P2_AGENT_CONTROLLER_EXPERIMENTAL`（DSH/API live；`advance-build` 对带 `plan` 的 1.3 prepared event 有实验分支；prepare_agent_scope + 完整 CLI 流程已真实跑通；旧 acceptance projection 待扩展）
+- 状态：`P2_AGENT_CONTROLLER_EXPERIMENTAL`（DSH/API live；`advance-build` 对带 `plan` 的 1.3 prepared event 有实验分支；prepare_agent_scope + 完整 CLI 流程已真实跑通；旧事件投影可见 ACCEPTED；controller 重试/预算/返修仍待硬化）
 - 日期：2026-10-26
-- 基线：`eb01bc0`，66 模块 / 930 项门禁（P2 full-flow live + experimental 1.3 controller）
+- 基线：`eb01bc0`，66 模块 / 930 项门禁（P2 full-flow live + old-event controller）
 - 配套方案：`Harness_Foundry_升级方案_v2_DeepSeek与无Codex.md`
 - 取代：`AGENT_ADAPTER_CONTRACT.md` v1 的 M1/M2 适配器部分
 - 保留：`ADR-0001` Scope 版本、`ADR-0003` agents 包；`ADR-0002` 的“Codex sandbox 依赖”被取代
@@ -52,7 +52,7 @@
 | 工作流 | 执行宿主 | 目标 | 失败状态 |
 |---|---|---|---|
 | **A. Host-native** | Foundry 在 DSH 外层（Terminal/launchd），seatbelt/bwrap 包裹 agent 与检查命令 | 第一交付；无 Codex 完整构建 | `BLOCKED_SANDBOX`；不授权 `none`；B 继续 |
-| **B. Desktop-native** | Foundry 在 DSH 内，复用 DSH 工具/沙箱 | 并行 probe；Desktop attach 路径 | `NOT_VERIFIED`；不阻塞 A |
+| **B. GUI/attach（关闭）** | 直接附着 GUI session | probe 结果：仅 `/api/file`，GUI `standard` 不可 headless | `NOT_SUPPORTED`；不阻塞 A |
 
 A 与 B 不互相等待；B 的 probe 失败不改变 A 的验收，A 的 sandbox 失败也不证明 B 不可行。
 

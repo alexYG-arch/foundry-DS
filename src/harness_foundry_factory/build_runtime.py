@@ -368,7 +368,9 @@ def prepare_agent_scope(store, ir, plan, source, scope, *, created_at):
     validate_scope_13(plan, scope)
     _check(_utc(created_at) < _utc(scope["expires_at"]), "authorization already expired")
     _check_native_layout(store, scope, source)
-    return {"scope": scope, "plan": plan, "verifier_files": {}, "acceptance_contracts": contracts}
+    owners = {task["workpack_id"]: [task["workpack_id"]] for task in plan["workpacks"]}
+    return {"scope": scope, "plan": plan, "verifier_files": {}, "acceptance_contracts": contracts,
+            "task_budget_owners": owners}
 
 
 def prepare_build_authorization(store, program_id, proposal_event_id, source_event_id, scope, *,

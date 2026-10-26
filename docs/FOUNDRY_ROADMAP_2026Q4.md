@@ -25,7 +25,7 @@
 | 工作流 | 目标 | 失败时 |
 |---|---|---|
 | **A. Host-native** | 第一交付：Foundry 在 DSH 外层，seatbelt/bwrap 执行；无 Codex 完整构建 | `BLOCKED_SANDBOX`；不授权 `none`；B 继续 |
-| **B. Desktop-native** | 并行 probe DSH 本地 API/工具桥，让 Foundry 在 DSH 内复用其沙箱 | `NOT_VERIFIED`；不阻塞 A |
+| **B. GUI/attach（关闭）** | probe 完成：仅 `/api/file`，GUI `standard` 不可 headless | `NOT_SUPPORTED`；不阻塞 A |
 
 ## 0.2 自主修复，不等人确认
 
@@ -129,7 +129,7 @@ P0 规格/宿主
 ## 4. 当前状态（2026-10-26）
 
 - 已完成：v1 的 Phase 0、M0、M1.0/M1.1、D0/D1/D4a、M2.0/M2.1a、iOS/Android 环境；P1 fixture；P2 DSH/API live、headless handoff、Plan/Scope 1.3 live、完整 1.3 CLI 流程（实验性 controller）；
-- 未完成：旧 acceptance projection/read-build 扩展、GUI-created Desktop session attach、carrier、设计变异、70 次；
+- 未完成：controller 重试/预算/返修硬化、GUI-created Desktop session attach、carrier、设计变异、70 次；
 - 门禁：66 模块 / 930 项 PASS；
 - 关键事实：A seatbelt 在外层 PASS；B `dsh web` UI 启动但 attach API 未找到；`dsh headless` 真实跑通；DeepSeek API 真实调用/工具循环 PASS；headless session handoff PASS；GUI `standard` preset handoff `SESSION_PRESET_UNSUPPORTED`；
 - 当前证据在 `work/evidence/p1/`、`work/evidence/p2/`；P1/P2 文档随本次提交更新。

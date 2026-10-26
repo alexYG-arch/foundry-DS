@@ -68,7 +68,7 @@ class AgentControllerTests(unittest.TestCase):
         self.assertEqual((self.workspace / "proof.txt").read_text(), "proof.txt")
         events = self.store.list_events(self.program)
         self.assertEqual([row["event_type"] for row in events[-2:]],
-                         ["BUILD_AGENT_ATTEMPT_STARTED", "BUILD_AGENT_ATTEMPT_FINISHED"])
+                         ["BUILD_ATTEMPT_STARTED", "BUILD_ATTEMPT_FINISHED"])
         self.assertFalse(result["harness_e2e_verified"])
 
     def test_advance_build_routes_13_prepared_event_to_agent_controller(self):
