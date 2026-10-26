@@ -18,6 +18,21 @@ ROOT = Path(__file__).resolve().parents[1]
 FAKE = ROOT / "tests/fixtures/agents/controller-dsh.sh"
 
 
+class FlakyAdapter:
+    def __init__(self, workspace, fail_first=True, always_fail=False):
+        self.workspace = Path(workspace)
+        self.fail_first = fail_first
+        self.always_fail = always_fail
+        self.calls = 0
+
+    def run(self, request, *, before_dispatch, **hooks):
+        self.calls += 1
+        (self.workspace / "proof.txt").write_text("proof.txt")
+        failed = self.always_fail or (self.fail_first and self.calls == 1)
+        return {"status": "FAIL" if failed else "PASS", "adapter_id": "flaky",
+                "workload_started": True, "workpack_accepted": False}
+
+
 class AgentControllerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -79,6 +94,34 @@ class AgentControllerTests(unittest.TestCase):
         self.assertEqual(result["status"], "PLAN_CHECKS_ACCEPTED", result)
         self.assertEqual(result["agent_controller"], "EXPERIMENTAL_1_3")
         self.assertEqual((self.workspace / "proof.txt").read_text(), "proof.txt")
+
+    def test_controller_retries_rejected_attempt(self):
+        adapter = FlakyAdapter(self.workspace, fail_first=True)
+        result = AgentBuildController(self.store, self.program,
+                                      adapter_factory=lambda task, scope: adapter).advance(self.prepared["event_id"])
+        self.assertEqual(result["status"], "PLAN_CHECKS_ACCEPTED", result)
+        self.assertEqual(adapter.calls, 2)
+        self.assertEqual(result["attempts_used"], 2)
+        statuses = [row["payload"]["status"] for row in self.store.list_events(self.program)
+                    if row["event_type"] == "BUILD_ATTEMPT_FINISHED"]
+        self.assertEqual(statuses, ["REJECTED", "ACCEPTED"])
+
+    def test_controller_task_budget_exhaustion(self):
+        adapter = FlakyAdapter(self.workspace, always_fail=True)
+        scope = json.loads(json.dumps(self.scope))
+        scope["max_task_attempts"] = 1
+        now = datetime.now(timezone.utc).isoformat()
+        revision = len(self.store.list_events(self.program))
+        prepared = self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_PREPARED",
+            "payload": {"scope": scope, "plan": self.plan}}], expected_revision=revision,
+            idempotency_key="prepare-budget", created_at=now, require_new=True)[0]
+        self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_APPROVED",
+            "payload": {"prepared_event_id": prepared["event_id"]}}], expected_revision=revision + 1,
+            idempotency_key="approve-budget", created_at=now, require_new=True)
+        result = AgentBuildController(self.store, self.program,
+                                      adapter_factory=lambda task, scope: adapter).advance(prepared["event_id"])
+        self.assertEqual(result["status"], "TASK_REPAIR_BUDGET_EXHAUSTED", result)
+        self.assertEqual(adapter.calls, 1)
 
     def test_controller_requires_approval(self):
         other = self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_PREPARED",

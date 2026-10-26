@@ -90,57 +90,82 @@ class AgentBuildController:
         validate_scope_13(plan, scope)
         workspace = Path(scope["workspace_root"]).resolve()
         accepted = []
+        used = 0
         for task in plan["workpacks"]:
             if task.get("executor") != "AGENT":
                 raise ValueError("experimental controller only dispatches AGENT workpacks")
-            attempt_id = "AGENT-ATTEMPT-" + uuid4().hex
-            owners = prepared.get("task_budget_owners", {}).get(task["workpack_id"], [task["workpack_id"]])
-            started = {"attempt_id": attempt_id, "workpack_id": task["workpack_id"],
-                       "job_id": task["job_id"], "prepared_event_id": prepared_id,
-                       "proposal_event_id": prepared.get("proposal_event_id"),
-                       "budget_workpack_ids": owners, "executor": "AGENT",
-                       "adapter": task["agent"]["adapter"]}
-            self.store.append_batch(self.program_id, [{"event_type": "BUILD_ATTEMPT_STARTED",
-                "payload": started}],
-                expected_revision=len(events), idempotency_key=attempt_id + ":start",
-                created_at=datetime.now(timezone.utc).isoformat(), require_new=True)
-            events = self.store.list_events(self.program_id)
             adapter = (self.adapter_factory(task, scope) if self.adapter_factory
                        else self._default_adapter(task, scope))
-            command = SimpleNamespace(scope=SimpleNamespace(
-                cwd=workspace, read_roots=(workspace, *[Path(root) for root in scope["source_read_roots"]]),
-                write_roots=tuple(Path(root) for root in scope["task_write_roots"][task["workpack_id"]]),
-                timeout_seconds=scope["command_timeout_seconds"], environment={}))
-            result = adapter.run(AgentRequest(command=command, prompt=self._prompt(task)),
-                                 before_dispatch=lambda: None)
-            artifacts = {}
-            artifact_error = None
-            try:
-                for item in task["artifacts"]:
-                    path = (workspace / item["path"]).resolve()
-                    if not path.is_file():
-                        raise ValueError(f"declared artifact missing: {item['path']}")
-                    artifacts[item["artifact_id"]] = {
-                        "path": item["path"], "size": path.stat().st_size,
-                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
-            except (OSError, ValueError) as exc:
-                artifact_error = str(exc)
-            verification = [] if artifact_error else self._verify(task, scope, workspace)
-            passed = (result.get("status") == "PASS" and artifact_error is None
-                      and bool(verification) and all(row["result"].get("status") == "PASS" for row in verification))
-            payload = {**started, "status": "ACCEPTED" if passed else "REJECTED",
-                       "artifacts": artifacts, "artifact_error": artifact_error,
-                       "verification": verification, "effects": {"status": "NOT_OBSERVED", "external_effects_verified": False},
-                       "result": result, "workpack_accepted": passed}
-            self.store.append_batch(self.program_id, [{"event_type": "BUILD_ATTEMPT_FINISHED",
-                "payload": payload}], expected_revision=len(events),
-                idempotency_key=attempt_id + ":finish", created_at=datetime.now(timezone.utc).isoformat(), require_new=True)
-            if not passed:
-                return {"status": "AGENT_BUILD_REJECTED", "workpack_id": task["workpack_id"],
-                        "attempt_id": attempt_id, "artifact_error": artifact_error,
-                        "verification": verification, "execution_started": True,
-                        "harness_e2e_verified": False}
-            accepted.append(task["workpack_id"])
-            events = self.store.list_events(self.program_id)
+            task_attempts = 0
+            while True:
+                if used >= scope["max_attempts"]:
+                    return {"status": "ATTEMPT_BUDGET_EXHAUSTED", "accepted_workpacks": accepted,
+                            "attempts_used": used, "execution_started": True,
+                            "harness_e2e_verified": False}
+                if task_attempts >= scope["max_task_attempts"]:
+                    return {"status": "TASK_REPAIR_BUDGET_EXHAUSTED", "workpack_id": task["workpack_id"],
+                            "accepted_workpacks": accepted, "attempts_used": used,
+                            "execution_started": True, "harness_e2e_verified": False}
+                used += 1
+                task_attempts += 1
+                attempt_id = "AGENT-ATTEMPT-" + uuid4().hex
+                owners = prepared.get("task_budget_owners", {}).get(task["workpack_id"], [task["workpack_id"]])
+                started = {"attempt_id": attempt_id, "workpack_id": task["workpack_id"],
+                           "job_id": task["job_id"], "prepared_event_id": prepared_id,
+                           "proposal_event_id": prepared.get("proposal_event_id"),
+                           "budget_workpack_ids": owners, "executor": "AGENT",
+                           "adapter": task["agent"]["adapter"]}
+                self.store.append_batch(self.program_id, [{"event_type": "BUILD_ATTEMPT_STARTED",
+                    "payload": started}], expected_revision=len(events),
+                    idempotency_key=attempt_id + ":start",
+                    created_at=datetime.now(timezone.utc).isoformat(), require_new=True)
+                events = self.store.list_events(self.program_id)
+                command = SimpleNamespace(scope=SimpleNamespace(
+                    cwd=workspace, read_roots=(workspace, *[Path(root) for root in scope["source_read_roots"]]),
+                    write_roots=tuple(Path(root) for root in scope["task_write_roots"][task["workpack_id"]]),
+                    timeout_seconds=scope["command_timeout_seconds"], environment={}))
+                result = adapter.run(AgentRequest(command=command, prompt=self._prompt(task)),
+                                     before_dispatch=lambda: None)
+                artifacts = {}
+                artifact_error = None
+                try:
+                    for item in task["artifacts"]:
+                        path = (workspace / item["path"]).resolve()
+                        if not path.is_file():
+                            raise ValueError(f"declared artifact missing: {item['path']}")
+                        artifacts[item["artifact_id"]] = {
+                            "path": item["path"], "size": path.stat().st_size,
+                            "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                except (OSError, ValueError) as exc:
+                    artifact_error = str(exc)
+                verification = [] if artifact_error else self._verify(task, scope, workspace)
+                passed = (result.get("status") == "PASS" and artifact_error is None
+                          and bool(verification) and all(row["result"].get("status") == "PASS" for row in verification))
+                payload = {**started, "status": "ACCEPTED" if passed else "REJECTED",
+                           "artifacts": artifacts, "artifact_error": artifact_error,
+                           "verification": verification,
+                           "effects": {"status": "NOT_OBSERVED", "external_effects_verified": False},
+                           "result": result, "workpack_accepted": passed}
+                self.store.append_batch(self.program_id, [{"event_type": "BUILD_ATTEMPT_FINISHED",
+                    "payload": payload}], expected_revision=len(events),
+                    idempotency_key=attempt_id + ":finish",
+                    created_at=datetime.now(timezone.utc).isoformat(), require_new=True)
+                events = self.store.list_events(self.program_id)
+                if passed:
+                    accepted.append(task["workpack_id"])
+                    break
+                if task_attempts >= scope["max_task_attempts"]:
+                    return {"status": "TASK_REPAIR_BUDGET_EXHAUSTED", "workpack_id": task["workpack_id"],
+                            "attempt_id": attempt_id, "artifact_error": artifact_error,
+                            "verification": verification, "accepted_workpacks": accepted,
+                            "attempts_used": used, "execution_started": True,
+                            "harness_e2e_verified": False}
+                if used >= scope["max_attempts"]:
+                    return {"status": "ATTEMPT_BUDGET_EXHAUSTED", "workpack_id": task["workpack_id"],
+                            "attempt_id": attempt_id, "artifact_error": artifact_error,
+                            "verification": verification, "accepted_workpacks": accepted,
+                            "attempts_used": used, "execution_started": True,
+                            "harness_e2e_verified": False}
         return {"status": "PLAN_CHECKS_ACCEPTED", "accepted_workpacks": accepted,
-                "agent_controller": "EXPERIMENTAL_1_3", "harness_e2e_verified": False}
+                "attempts_used": used, "agent_controller": "EXPERIMENTAL_1_3",
+                "harness_e2e_verified": False}
