@@ -20,18 +20,25 @@
 6. Reviewer、目标 Harness carrier、发布包都不默认 Codex；
 7. 设计 RSI 的 D0/D1/D4a 进入可运营状态，设计变异通过前不启动 70 次运行。
 
+## 0.1 A/B 两条工作流
+
+| 工作流 | 目标 | 失败时 |
+|---|---|---|
+| **A. Host-native** | 第一交付：Foundry 在 DSH 外层，seatbelt/bwrap 执行；无 Codex 完整构建 | `BLOCKED_SANDBOX`；不授权 `none`；B 继续 |
+| **B. Desktop-native** | 并行 probe DSH 本地 API/工具桥，让 Foundry 在 DSH 内复用其沙箱 | `NOT_VERIFIED`；不阻塞 A |
+
 ## 1. 阶段
 
 ### P0 规格与宿主决策（2–3 人日）
 
 - 评审本方案 + spec v2；
-- 决定 Host-native（Foundry 在 DSH 外层）为第一交付；Desktop-native 作为目标研究；
-- 确认 DSH Desktop `HANDOFF` 为 MVP，`ATTACH` 标 `NOT_VERIFIED`；
-- 确认 seatbelt/bwrap 是 no-Codex 完整构建硬前提；嵌套沙箱失败则 `NO_GO`，不许降级 `none`。
+- 冻结 **A = Host-native 第一交付**；**B = Desktop-native 并行 probe**；
+- 确认 DSH Desktop `HANDOFF` 为 A 的 MVP，`ATTACH` 为 B 的 `NOT_VERIFIED`；
+- 确认 seatbelt/bwrap 是 A 的硬前提；A 失败只标 `BLOCKED_SANDBOX`，B 继续，不许降级 `none`。
 
 **退出**：无未决“Codex 是否可选”；无未决“Desktop attach 是否承诺”。
 
-### P1 无 Codex 基础（5–7 人日）
+### P1 A 的无 Codex 基础（5–7 人日；B probe 并行）
 
 - Plan/Scope 1.3；新路径移除 `codex_executable`；
 - `SeatbeltSandboxProvider`（macOS）+ `BubblewrapSandboxProvider`（Linux）；至少 macOS 真实可用；
@@ -41,7 +48,7 @@
 
 **退出**：无 Codex fixture E2E；进程树无 `codex`；1.2 双跑。
 
-### P2 DSH Desktop/Headless 垂直切片（5–7 人日）
+### P2 A 的 DSH Desktop/Headless 垂直切片（5–7 人日；B probe 继续）
 
 - `DshHeadlessTransport`：probe、NDJSON、session、usage、错误码；
 - `DshDesktopTransport(HANDOFF)`：桌面 session → `dsh headless --session-id`，锁检查，Readback；
@@ -95,7 +102,7 @@ P0 规格/宿主
 | 新 Plan 无 CODEX | 不得发布 |
 | 新 Scope 无 `codex_executable` 必填 | 不得发布 |
 | 运行路径无 `codex` 进程 | 不得宣称“去 Codex 完成” |
-| 真实 sandbox provider | `NO_GO`，不得用 `none` |
+| 真实 sandbox provider（A） | A `BLOCKED_SANDBOX`；不得用 `none`；B 继续 |
 | Desktop handoff 真实证据 | 只能写 `NOT_VERIFIED` |
 | Reviewer 非 Codex | 不得宣称完整无 Codex |
 | 目标 Harness 无 Codex 默认 | 不得发布 |
@@ -116,4 +123,4 @@ P0 规格/宿主
 3. 按 P1 开始 Plan/Scope 1.3 与 seatbelt provider；
 4. 在 P2 完成后才继续设计 RSI 的运行层。
 
-> 本路线图不授权执行；`NO_GO` 条件优先于进度。
+> 本路线图不授权执行；A 的 sandbox 失败只阻塞 A，B 的 `NOT_VERIFIED` 不阻塞 A。

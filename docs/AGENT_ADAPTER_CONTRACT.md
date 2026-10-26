@@ -47,6 +47,15 @@
 
 两者必须分开声明、分开审批。Agent 能访问模型，不代表任务命令能访问任意网络。
 
+### 1.2 A/B 两条工作流
+
+| 工作流 | 执行宿主 | 目标 | 失败状态 |
+|---|---|---|---|
+| **A. Host-native** | Foundry 在 DSH 外层（Terminal/launchd），seatbelt/bwrap 包裹 agent 与检查命令 | 第一交付；无 Codex 完整构建 | `BLOCKED_SANDBOX`；不授权 `none`；B 继续 |
+| **B. Desktop-native** | Foundry 在 DSH 内，复用 DSH 工具/沙箱 | 并行 probe；Desktop attach 路径 | `NOT_VERIFIED`；不阻塞 A |
+
+A 与 B 不互相等待；B 的 probe 失败不改变 A 的验收，A 的 sandbox 失败也不证明 B 不可行。
+
 ---
 
 ## 2. 通用协议
@@ -186,9 +195,9 @@ export DSH_HOME="<scope.dsh_home>"
 - DSH session 持久化在 `$DSH_HOME/sessions/<workspace>/session-*`，含 `session.lock`；
 - 桌面 app、headless、web 都使用 `DSH_HOME` 下的 session 存储。
 
-### 4.2 支持的 Desktop 模式
+### 4.2 支持的 Desktop 模式（A 的 handoff；B 的 attach）
 
-#### A. `HANDOFF`（MVP，必须实现）
+#### A-1. `HANDOFF`（A 工作流 MVP，必须实现）
 
 流程：
 
@@ -203,7 +212,7 @@ export DSH_HOME="<scope.dsh_home>"
 
 验收：桌面创建 session → Foundry handoff → 产物 → 独立检查 → 接受；全程无 Codex。
 
-#### B. `WEB_API`（P2.1，需 probe）
+#### B-1. `WEB_API`（B 工作流 P2.1，需 probe）
 
 ```bash
 dsh --profile web --host 127.0.0.1 --port 0 --no-open
@@ -214,7 +223,7 @@ dsh --profile web --host 127.0.0.1 --port 0 --no-open
 - probe 必须记录实际 `/api` 路径、认证方式、请求/响应样例（脱敏）；
 - 未通过 probe → `DSH_WEB_API_UNAVAILABLE`，不写 Attach 实现。
 
-#### C. `ATTACH`（P4+，目标，未验证）
+#### B-2. `ATTACH`（B 工作流 P4+，目标，未验证）
 
 - 直接附着运行中的 Desktop app，不重启、不复制 session；
 - 需要 DSH 官方/稳定的本地 API 或插件入口；
@@ -311,9 +320,10 @@ prompt + tools
 ### 7.2 嵌套约束
 
 - 实测：在 DSH 会话内执行 `sandbox-exec` 返回 `Operation not permitted`；
-- Host-native 完整构建要求 Foundry 运行在 DSH 外层；
-- 如果只能在 DSH 内运行，必须使用 Desktop-native 桥（DSH 执行工具）或外部 sandbox broker；否则 `NO_GO`；
-- 禁止用 `none` 替代。
+- **A**：Foundry 必须在 DSH 外层；seatbelt 不可用 → `BLOCKED_SANDBOX`，A 暂停；不得用 `none` 替代；
+- **B**：在 DSH 内并行 probe 本地 API/工具桥；探不到 → `NOT_VERIFIED`，A 继续；
+- 外部 sandbox broker 是 A 的后备方案之一，不是默认；
+- `none` 永远不是生产降级项。
 
 ### 7.3 网络 profile
 
@@ -461,10 +471,10 @@ prompt + tools
 
 | 项 | 状态 | 处理 |
 |---|---|---|
-| DSH Desktop attach API | `NOT_VERIFIED` | P0/P2.1 probe；不实现前标 NOT_VERIFIED |
+| DSH Desktop attach API（B） | `NOT_VERIFIED` | P0/P2.1 probe；不实现前标 NOT_VERIFIED；不影响 A |
 | DSH headless NDJSON schema | 未冻结 | M0 真实样本后冻结 |
 | DSH `--session-id` 并发/锁行为 | 部分（有 session.lock） | 必须实测；失败 `DSH_SESSION_LOCKED` |
-| `sandbox-exec` 在 DSH 外层 | 待验证 | Host-native 前置；失败则 `NO_GO` |
+| `sandbox-exec` 在 DSH 外层 | 待验证 | A 前置；失败则 A `BLOCKED_SANDBOX`，B 继续 |
 | `bwrap` macOS | 不存在 | 仅 Linux |
 | DeepSeek API 工具 schema | 待 probe | 不假设永久稳定 |
 | 无 Codex 的 REMOTE_SERVICE | 未实现 | 先 `NONE`/`LOOPBACK`，fail-closed |
