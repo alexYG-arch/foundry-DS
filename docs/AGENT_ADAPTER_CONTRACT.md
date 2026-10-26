@@ -393,7 +393,7 @@ prompt + tools
 
 ## 8. Plan/Scope 1.3
 
-P1 fixture implementation: `src/harness_foundry_factory/agents/scope13.py` (`validate_scope_13`, `run_agent_workpack`) and `tests/test_agent_scope13.py`. P2 transport: `src/harness_foundry_factory/agents/dsh.py` (`DshHeadlessAdapter`) and `agents/api.py` (`DeepseekApiAdapter`, constrained tool loop), key from `DEEPSEEK_API_KEY` or `~/.dsh/foundry/deepseek.key` (0600). The controller `advance-build` integration is not yet wired; do not treat the fixture/transport path as a production authorization.
+P1 fixture implementation: `src/harness_foundry_factory/agents/scope13.py` (`validate_scope_13`, `run_agent_workpack`) and `tests/test_agent_scope13.py`. P2 transport: `src/harness_foundry_factory/agents/dsh.py` (`DshHeadlessAdapter`) and `agents/api.py` (`DeepseekApiAdapter`, constrained tool loop; real `write_file` and `run_command` verified), key from `DEEPSEEK_API_KEY` or `~/.dsh/foundry/deepseek.key` (0600). The controller `advance-build` integration is not yet wired; do not treat the fixture/transport path as a production authorization.
 
 ### 8.1 Plan 1.3
 
