@@ -132,7 +132,7 @@ P0 规格/宿主
 - 未完成：Scope 1.3 运行时、DeepSeek transport、无 Codex E2E、carrier、设计变异、70 次；
 - 门禁：61 模块 / 916 项 PASS；
 - 关键事实：A seatbelt 在外层 PASS；B `dsh web` UI 启动但 attach API 未找到；`dsh headless` transport PASS 但 **MISSING_CREDENTIAL**；`desktop` profile 由 Electron 独占；DSH session 带锁；
-- 当前 `repo/` commit `b3ffbc7`；P1 的 Seatbelt + Plan 1.3 已实现；P0 结果在 `work/evidence/p0/`。
+- 当前 `repo/` commit `e2ca2e3`；P1 的 Seatbelt + Plan 1.3 已实现；P0 结果在 `work/evidence/p0/`。
 
 ## 5. 下一步
 
