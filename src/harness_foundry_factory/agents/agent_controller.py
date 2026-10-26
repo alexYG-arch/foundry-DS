@@ -18,6 +18,7 @@ from uuid import uuid4
 from .base import AgentRequest
 from .dsh import DshHeadlessAdapter
 from .sandbox_seatbelt import SeatbeltSandboxProvider
+from .sandbox_bwrap import BubblewrapSandboxProvider
 from .scope13 import validate_scope_13
 
 
@@ -33,7 +34,9 @@ class AgentBuildController:
         self.store = store
         self.program_id = program_id
         self.adapter_factory = adapter_factory
-        self.provider = provider or SeatbeltSandboxProvider()
+        self.provider = provider or (SeatbeltSandboxProvider()
+                                      if Path("/usr/bin/sandbox-exec").is_file()
+                                      else BubblewrapSandboxProvider())
 
     def _default_adapter(self, task, scope):
         definition = next((row for row in scope["agents"].values()

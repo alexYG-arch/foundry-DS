@@ -19,7 +19,7 @@ SCOPE_FIELDS = {
 }
 AGENT_FIELDS = {"adapter", "executable", "dsh_home", "session", "model"}
 SANDBOX_FIELDS = {"provider", "network"}
-PROVIDERS = {"seatbelt", "none"}
+PROVIDERS = {"seatbelt", "bwrap", "none"}
 
 
 def _require(condition, message):
