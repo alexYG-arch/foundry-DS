@@ -101,4 +101,4 @@
 - 已完成：ADR-0001/0002/0003、M0 契约、M1.0 seam（两个模块 + 5 个测试）、D0 六案例、D1 模板/schema、D4a 工具 + 9 个测试、移动端预注册/检查表/README/runbook/材质修订。
 - 已通过：完整 58 模块 / 897 项门禁（`build/source-checks-m2c.json`）。
 - 已装：标准 Flutter 3.35.3、JDK 21、Android platform-tools/platform/build-tools、Codex CLI 0.164.0。待环境：Xcode license（需用户 sudo）、CocoaPods、Android AVD、首次 Gradle 构建。
-- 下一步：M2.1 fixture agent + `none` provider + 无模型 E2E；移动端先做设计变异层，不急着冻结 70 次。
+- 下一步：M2.1b controller `advance-build` E2E（fixture agent / None provider 已在 M2.1a 落地）；移动端先做设计变异层，不急着冻结 70 次。
