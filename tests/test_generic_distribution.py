@@ -31,7 +31,7 @@ import importlib.abc, sys
 class RejectLegacy(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if fullname.startswith("harness_foundry_factory."):
-            if fullname.split(".", 1)[1] not in ALLOWED:
+            if fullname.split(".")[1] not in ALLOWED:
                 raise AssertionError("generic runtime imported " + fullname)
 sys.meta_path.insert(0, RejectLegacy())
 '''
@@ -182,7 +182,7 @@ class GenericDistributionTests(unittest.TestCase):
 
     def test_all_shipped_modules_import_without_legacy_or_external_dependencies(self):
         program = (f"import sys; sys.path.insert(0, {str(self.bundle / 'src')!r}); "
-                   f"ALLOWED = {set(packager.MODULES)!r}\n" + IMPORT_GUARD +
+                   f"ALLOWED = {set(packager.MODULES) | set(packager.PACKAGE_MODULES)!r}\n" + IMPORT_GUARD +
                    "import importlib\nfor name in sorted(ALLOWED):\n"
                    "    importlib.import_module('harness_foundry_factory.' + name)\n")
         result = self.run_python(["-c", program])
@@ -190,7 +190,7 @@ class GenericDistributionTests(unittest.TestCase):
 
     def test_source_public_dispatch_uses_same_neutral_modules(self):
         program = (f"import sys; sys.path.insert(0, {str(ROOT / 'src')!r}); "
-                   f"ALLOWED = {set(packager.MODULES) | {'entrypoint'}!r}\n" + IMPORT_GUARD +
+                   f"ALLOWED = {set(packager.MODULES) | set(packager.PACKAGE_MODULES) | {'entrypoint'}!r}\n" + IMPORT_GUARD +
                    "from harness_foundry_factory.entrypoint import main\n"
                    "raise SystemExit(main(['compile-build-plan', '--request', '-', '--json']))\n")
         result = self.run_python(["-c", program], data=json.dumps(request_fixture()))
@@ -239,7 +239,7 @@ class GenericDistributionTests(unittest.TestCase):
         # Reuse the existing test-only durable runner without importing tests or
         # source modules in the relocated child. Production still has no bypass.
         program = (f"import sys; sys.path.insert(0, {str(self.bundle / 'src')!r}); "
-                   f"ALLOWED = {set(packager.MODULES)!r}\n" + IMPORT_GUARD + '''
+                   f"ALLOWED = {set(packager.MODULES) | set(packager.PACKAGE_MODULES)!r}\n" + IMPORT_GUARD + '''
 from copy import deepcopy
 import json, os, signal, subprocess
 from pathlib import Path
@@ -317,7 +317,7 @@ print(json.dumps(first))
         # Only the test process injects a local runner. The distributed CLI has no
         # switch to bypass its native receiver. This is not sandbox/model acceptance.
         program = (f"import sys; sys.path.insert(0, {str(self.bundle / 'src')!r}); "
-                   f"ALLOWED = {set(packager.MODULES)!r}\n" + IMPORT_GUARD + '''
+                   f"ALLOWED = {set(packager.MODULES) | set(packager.PACKAGE_MODULES)!r}\n" + IMPORT_GUARD + '''
 import json, subprocess
 from harness_foundry_factory.build_runtime import BuildController, _COMMUNICATION_POLICY
 from harness_foundry_factory.revision_store import RevisionControlEventStore

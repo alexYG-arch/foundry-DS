@@ -25,6 +25,9 @@ MODULES = (
     "build_runtime", "build_reconciliation", "build_reassessment", "build_correction", "build_preview", "build_check_protocol", "build_rebind", "build_resource_lifecycle", "build_state", "build_artifacts", "build_effects", "build_replan", "build_repair", "build_entrypoint", "source_intake", "acceptance_contract", "revision_store",
     "agent_contract", "agent_codex", "local_process", "coding_process", "coding_defaults", "coding_events", "process_observation", "verification_resources", "verification_snapshot", "resource_observation", "resource_network", "resource_credentials", "legacy_history", "test_execution",
 )
+PACKAGE_MODULES = {"agents": ("__init__", "base", "codex")}
+ALLOWED_TOP_LEVEL = frozenset(MODULES) | frozenset(PACKAGE_MODULES)
+
 DOCS = ("RSI_ADOPTION", "RSI_CASE_INTAKE", "RSI_REVIEW_AND_TDD", "RSI_WIKI", "RSI_DELIVERY", "GENERIC_BUILD_PLAN", "HARNESS_DESIGN_GUIDE", "GENERIC_BUILD_CLI", "GENERIC_BUILD_RUNTIME",
         "GENERIC_SOURCE_INTAKE", "CAPABILITY_REFERENCE", "ACCEPTANCE_CONTRACT_ALIGNMENT", "FOUNDRY_UPGRADE_2026_10_10", "CLEAR_COMMUNICATION")
 EXAMPLES = ("task-cli/PRD.md", "csv-increment/PROJECT_BRIEF.md",
@@ -189,6 +192,10 @@ def literal_assignment(content, name, *, frozen_set=False):
 def collect_files(source_root=ROOT):
     root = Path(source_root).resolve(strict=True)
     sources = {f"src/harness_foundry_factory/{name}.py": f"src/harness_foundry_factory/{name}.py" for name in MODULES}
+    for package, names in PACKAGE_MODULES.items():
+        for name in names:
+            relative = f"src/harness_foundry_factory/{package}/{name}.py"
+            sources[relative] = relative
     sources.update({f"docs/{name}.md": f"docs/{name}.md" for name in DOCS})
     sources.update({f"examples/{name}": f"examples/{name}" for name in EXAMPLES})
     sources.update({"LICENSE": "LICENSE", "AGENTS.md": "resources/generic_release/AGENTS.md",
@@ -210,19 +217,25 @@ def collect_files(source_root=ROOT):
                 or any(pattern.search(text) for pattern in CREDENTIAL_PATTERNS)):
             raise ValueError(f"private identity or credential in release resource: {relative}")
         if destination.endswith(".py") and not destination.startswith("examples/"):
+            package = Path(relative).parent.name
             for node in ast.walk(ast.parse(text, filename=destination)):
                 if isinstance(node, ast.ImportFrom) and node.level:
-                    if node.level != 1 or node.module not in MODULES:
-                        raise ValueError(f"unpackaged local dependency: {relative}: {node.module}")
+                    module = node.module
+                    allowed = (module is None and package in PACKAGE_MODULES)
+                    if module:
+                        allowed = (module.split(".")[0] in PACKAGE_MODULES or module in MODULES
+                                   or package in PACKAGE_MODULES and module in PACKAGE_MODULES[package])
+                    if node.level != 1 or not allowed:
+                        raise ValueError(f"unpackaged local dependency: {relative}: {module}")
                 elif isinstance(node, (ast.Import, ast.ImportFrom)):
                     names = [alias.name for alias in node.names] if isinstance(node, ast.Import) else [node.module]
                     if any(name.split(".")[0] not in sys.stdlib_module_names | {"harness_foundry_factory"} for name in names):
                         raise ValueError(f"undeclared external Python dependency: {relative}")
                     for name in names:
-                        if name.startswith("harness_foundry_factory.") and name.split(".", 1)[1] not in MODULES:
+                        if name.startswith("harness_foundry_factory.") and name.split(".")[1] not in ALLOWED_TOP_LEVEL:
                             raise ValueError(f"unpackaged local dependency: {relative}: {name}")
                     if isinstance(node, ast.ImportFrom) and node.module == "harness_foundry_factory":
-                        if any(alias.name not in MODULES for alias in node.names):
+                        if any(alias.name not in ALLOWED_TOP_LEVEL for alias in node.names):
                             raise ValueError(f"undeclared package export dependency: {relative}")
         files[destination] = content
     identity = files["src/harness_foundry_factory/identity.py"]

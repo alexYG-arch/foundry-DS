@@ -1,7 +1,7 @@
 # Agent Adapter Contract（M0）
 
 - 版本：`AGENT_ADAPTER_CONTRACT_V1`
-- 状态：`FROZEN_FOR_M1`（M0 契约；M1.0 按 `ADR-0003` 用扁平模块实现）
+- 状态：`M1_1_IMPLEMENTED`（M0 契约；M1.0 扁平模块 + M1.1 `agents/` 包均已落地）
 - 日期：2026-10-26
 - 关联：`ADR-0001`（Scope 版本）、`ADR-0002`（沙箱边界）、`docs/CODING_COMMAND_PROTOCOL.md`
 - 非目标：本契约不定义模型调用协议、不实现第二个真实沙箱、不改变 Plan 1.0–1.2 语义。
@@ -44,7 +44,7 @@ class SandboxProvider(Protocol):
 
 `AgentRequest` 至少携带：`command`、`prompt`、`model`、`reasoning_effort`、`model_policy`、`model_service`、`model_defaults_source`。M1.0 用现有 `CodingCommand` 作为 `command`，不重写参数语义；`observation`/`cancellation_reason` 通过 `**hooks` 透传。
 
-> M1.0 实现说明：按 `ADR-0003` 先用扁平模块 `agent_contract.py` / `agent_codex.py`，不新建 `agents/` 包；`wrap()` 是 M2 目标，M1.0 用 `run()` 保持行为不变。
+> M1 实现说明：M1.0 用扁平 `agent_contract.py` / `agent_codex.py`；M1.1 已收拢为 `agents/` 包，扁平模块保留为兼容 shim。`wrap()` 仍是 M2 目标，M1 用 `run()` 保持行为不变。
 
 ## 2. probe 契约
 
@@ -92,7 +92,7 @@ class SandboxProvider(Protocol):
 | defaults | READABLE | EXPLICIT_ONLY | 待 probe | EXPLICIT_ONLY |
 | handoff | true | false | 待 probe | 声明式 |
 | sandbox | PROVIDER | NONE（仅测试） | PROVIDER/NATIVE 待定 | 声明式 |
-| 状态 | M1.0 实现 | M2 | 未实现 | M2 声明式 |
+| 状态 | M1.1 包内实现 | M2 | 未实现 | M2 声明式 |
 
 “待 probe”不是“支持”；没有 probe 证据的能力一律按不支持处理。
 
@@ -107,7 +107,7 @@ class SandboxProvider(Protocol):
 
 1. golden fixture：当前 Codex 事件流（从现有测试导出）归一化后逐条一致；原始字节不变。
 2. 负向：可执行缺失、probe 失败、未知事件超限、无 usage、协议错误、沙箱不可用、`none`+network 组合。
-3. 行为不变：M1.0 下 1.2 计划端到端结果与改造前一致；885 门禁全绿。
+3. 行为不变：M1.1 下 1.2 计划端到端结果与改造前一致；888 门禁全绿。
 4. 无模型 E2E：fixture agent 写出声明产物，`advance-build` 完成实现→独立检查→接受；进程树中无 `codex`（除显式 `codex-sandbox`）。
 5. Readback 必须显示 `adapter_id`、`adapter_version`、`sandbox_provider`、`usage_source`；`UNKNOWN` 不能显示成 0。
 

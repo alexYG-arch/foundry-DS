@@ -26,6 +26,8 @@ from .build_artifacts import (relative_path as _relative, file_identity as _file
                               superseded_artifacts, changed_accepted_files, check_accepted_files)
 from .build_review import validate_build_review, validate_review_sources
 from .local_process import LocalCommand, CodexSandboxRunner, unsupported_isolation_paths
+from .agents import CodexCliAdapter, CodexSandboxProvider
+from .agents.base import AgentRequest
 from .build_types import RequestValidationError, RevisionConflictError, IdempotencyConflictError, canonical_json
 from .process_observation import CommandObservation
 from .source_intake import load_local_sources, validate_requirement_source_bindings
@@ -556,8 +558,6 @@ class NativeBuildRunner:
         hooks.update(resource_dispatch_hooks(invocation, observation))
         try:
             if invocation["executor"] == "CODEX":
-                from .agent_codex import CodexCliAdapter
-                from .agent_contract import AgentRequest
                 from .coding_process import CodingCommand
                 coding = CodingCommand(command, invocation["prompt"], model=scope["model"],
                                        reasoning_effort=scope.get("model_reasoning_effort"),
@@ -572,7 +572,6 @@ class NativeBuildRunner:
                                  model_defaults_source=invocation.get("model_defaults_source")),
                     before_dispatch=before_dispatch, **hooks)
             else:
-                from .agent_codex import CodexSandboxProvider
                 result = CodexSandboxProvider(scope["codex_executable"],
                                               runner_class=CodexSandboxRunner).run(
                     command, before_dispatch=before_dispatch, **hooks)
