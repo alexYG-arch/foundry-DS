@@ -384,6 +384,8 @@ prompt + tools
 
 ## 8. Plan/Scope 1.3
 
+P1 fixture implementation: `src/harness_foundry_factory/agents/scope13.py` (`validate_scope_13`, `run_agent_workpack`) and `tests/test_agent_scope13.py`. The controller `advance-build` integration is not yet wired; do not treat the fixture path as a production authorization.
+
 ### 8.1 Plan 1.3
 
 ```json
