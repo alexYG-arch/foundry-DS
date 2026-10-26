@@ -1,144 +1,150 @@
-# Foundry 路线图 v2：DeepSeek 全形态 + 无 Codex 完整构建
+# Foundry 路线图 v3：Contract Independence
 
-- 状态：`IN_PROGRESS`
+- 状态：`PROPOSED_FOR_REVIEW`
 - 日期：2026-10-26
 - 基线：`repo/` commit `eb01bc0`，公开门禁 **70 模块 / 949 项**
-- 方案：`Harness_Foundry_升级方案_v2_DeepSeek与无Codex.md`（项目计划目录；本仓库 docs 不复制该文件）
-- 规格：[AGENT_ADAPTER_CONTRACT.md](AGENT_ADAPTER_CONTRACT.md)（v2）
+- 方案：`Harness_Foundry_升级方案_v3_ContractIndependence.md`（项目计划目录）
+- 规格：[AGENT_ADAPTER_CONTRACT.md](AGENT_ADAPTER_CONTRACT.md)（v3）
+- 决策：[ADR-0004-CONTRACT-INDEPENDENCE.md](decisions/ADR-0004-CONTRACT-INDEPENDENCE.md)
 
-本路线图取代 v1 的 M0–M4 排序。v1 的 M1.0/M1.1 包化、D0/D1/D4a 保留为已完成前置；M2.0/M2.1a 保留为基础，但不再继续扩展通用适配器。
+本路线图取代 v2 的“sandbox 硬前提”路线。  
+**计划闭合 = 7 项 contract 基线 + 无 Codex 新构建 + carrier 解绑；不是 sandbox 闭合。**
 
-## 0. 意图门（P0 先冻结）
+---
 
-新构建必须满足：
+## 0. 意图门
 
 1. 新 Plan/Scope 不使用 `CODEX` executor，不要求 `codex_executable`；
-2. 运行路径不启动 `codex` 进程；
-3. DeepSeek 四种形态全部支持：DSH Desktop、DSH 子进程、DeepSeek CLI、DeepSeek API；
-4. Desktop 以 **handoff** 为 MVP；attach 需要 probe，未验证前标 `NOT_VERIFIED`；
-5. 没有 Codex 也能完成文档确认 → Scope → 实现 → 独立检查 → 接受/返修/恢复；
-6. Reviewer、目标 Harness carrier、发布包都不默认 Codex；
-7. 设计 RSI 的 D0/D1/D4a 进入可运营状态，设计变异通过前不启动 70 次运行。
+2. Agent 只写 `staging/<attempt>`，不写 verifier/controller/CAS/accepted；
+3. Verifier 代码/expected 独立，不由 producer 生成；
+4. 只有 controller 写 acceptance；
+5. 事件 append-only；
+6. 预算/重试/恢复/超时/资源限制有效；
+7. 目标 Harness carrier 不默认 Codex；
+8. OS sandbox/VM 是可选加固，不是门。
 
-## 0.1 A/B 两条工作流
-
-| 工作流 | 目标 | 失败时 |
-|---|---|---|
-| **A. Host-native** | 第一交付：Foundry 在 DSH 外层，seatbelt/bwrap 执行；无 Codex 完整构建 | `BLOCKED_SANDBOX`；不授权 `none`；B 继续 |
-| **B. GUI/attach（关闭）** | probe 完成：仅 `/api/file`，GUI `standard` 不可 headless | `NOT_SUPPORTED`；不阻塞 A |
-
-## 0.2 自主修复，不等人确认
-
-- 技术失败默认自动修复：复现 → 最小修复 → 重跑受影响检查 → 全量门禁 → 记 `repair`；
-- 同一失败最多修 3 次；仍失败才标 `BLOCKED_*`，说明具体条件；
-- 只有 user-owned 门才停：用户决定/合同变更、凭据/权限/账号无法从环境或 DSH credentials service 获得、不可逆动作、外部付费/发布/远程写、需要扩大 Scope；
-- 自动修复不得放宽门禁、跳过独立检查、生产用 `none`、伪造凭据/审批、改写历史或扩大 Scope；
-- 技术失败不升级为“人工确认”；凭据缺失记 `BLOCKED_CREDENTIAL`，不是每轮问用户。
+---
 
 ## 1. 阶段
 
-### P0 规格与宿主决策（2–3 人日）
+### P0 Contract freeze（2–3 人日）
 
-- 评审本方案 + spec v2；
-- 冻结 **A = Host-native 第一交付**；**B = Desktop-native 并行 probe**；
-- 确认 DSH Desktop `HANDOFF` 为 A 的 MVP，`ATTACH` 为 B 的 `NOT_VERIFIED`；
-- 确认 seatbelt/bwrap 是 A 的硬前提；A 失败只标 `BLOCKED_SANDBOX`，B 继续，不许降级 `none`。
+- 评审 v3 方案 + spec；
+- 冻结角色、contract、CAS、acceptance、assurance 标签；
+- 选择 verifier 部署：同机 UID / 独立主机；
+- 明确 sandbox 可选。
 
-**P0 probe 结果（2026-10-26）**
+**退出**：角色/接口/CAS/acceptance 无未决；sandbox 不再阻塞。
 
-| 项 | 结果 |
-|---|---|
-| A seatbelt | **PASS**（danger-full-access 外层）；写域/网络限制通过；workspace-write 嵌套 EPERM |
-| B `dsh web` | UI + auth cookie PASS；猜测 `/api/*` 404；attach `NOT_VERIFIED` |
-| B `dsh headless` | transport PASS；`session/status/final` 已取到；**MISSING_CREDENTIAL** |
-| Desktop profile | Electron 独占，CLI 不能 boot |
+### P1 Contract baseline（5–7 人日）
 
-**退出**：A/B 边界已记录；A sandbox 已证；**凭据来源仍是 P2 前置**（缺失时 `BLOCKED_CREDENTIAL`，不要求人工确认）；B attach `NOT_VERIFIED`。
+- staging → CAS；
+- verifier contract + code/expected identity；
+- controller acceptance 更新；
+- append-only/预算/恢复；
+- timeout/资源限制；
+- `read-build` 回读。
 
-### P1 A 的无 Codex 基础（5–7 人日；B probe 并行）
+**退出**：CAS/acceptance/timeout/恢复 fixture 全过。
 
-- Plan/Scope 1.3；新路径移除 `codex_executable`；
-- `SeatbeltSandboxProvider`（macOS）+ `BubblewrapSandboxProvider`（Linux）；至少 macOS 真实可用；
-- `AgentTransport`/`SandboxProvider` 协议；
-- `rsi_review.py` 去 CODEX 硬编码；
-- 旧 1.0–1.2 只读兼容测试。
+### P2 Agent transport（3–5 人日）
 
-**退出**：无 Codex fixture E2E；进程树无 `codex`；1.2 双跑。
+- DSH headless / API；
+- `TRUSTED_HOST` 直接运行路径；
+- 无 sandbox 时明确 `execution_mode`；
+- probe/负例。
 
-### P2 A 的 DSH Desktop/Headless 垂直切片（5–7 人日；B probe 继续）
+**退出**：DSH/API 真实运行；不标 sandbox PASS。
 
-- `DshHeadlessTransport`：probe、NDJSON、session、usage、错误码；
-- 自动探测/接入 DSH headless 凭据（env/credentials service；禁止复制/内联）；缺失只记 `BLOCKED_CREDENTIAL`；
-- `DshDesktopTransport(HANDOFF)`：桌面 session → `dsh headless --session-id`，锁检查，Readback；
-- `dsh web --no-open --port 0` + `/api` probe（只记录，不猜）；
-- 真实 DSH 任务：实现 → 独立检查 → 接受。
+### P3 无 Codex full build（5–7 人日）
 
-**退出**：Desktop handoff 证据；无 Codex 完整 E2E；session/DSH_HOME 记录。
+- 真实 DSH/API；
+- 独立 verifier；
+- staging/CAS；
+- 无 codex 进程；
+- 失败恢复；
+- 包/文档。
 
-### P3 DeepSeek API + CLI（5–8 人日）
+**退出**：无 Codex 完整矩阵；acceptance 只由 controller。
 
-- `DeepseekApiTransport` 工具循环：read/list/write/run/finish，经 sandbox；
-- `DeepseekCliTransport` 通用 profile；
-- API key/allowlist/usage/重试/负例。
+### P4 Carrier（2–3 人日）
 
-**退出**：API 真实任务通过独立检查；CLI 不可用时 `ADAPTER_PROBE_FAILED`。
+- 目标 Harness 文档/SKILL/CARRIERS；
+- 至少一个非 Codex carrier E2E。
 
-### P4 无 Codex 完整构建 + Carrier（5–7 人日）
+### P5 设计 RSI（并行）
 
-- 隐藏/卸载 Codex 后跑完整流程；
-- 目标 Harness 规则/Skill/README/指令发现/capability carriers 去 Codex 默认；
-- 包清单/安装说明无 Codex 依赖；
-- 旧计划只读兼容。
+- D4a/D0 已实现；
+- 设计变异/70 次是外部门，另行。
 
-**退出**：无 Codex 完整矩阵；Reviewer 非 Codex；目标 Harness 可被 DSH/DeepSeek 使用。
+### O1 可选加固
 
-### P5 设计 RSI 运营化（并行，3–5 人日 + 实验）
+- 独立 UID / 独立 verifier 主机 / seatbelt / bwrap / VM / host gateway；
+- 先有威胁模型需求才做；
+- 不阻塞 P3。
 
-- D0.1 映射器、D4a 编译门已实现；D4a 已接入 `compile-build-plan`（可选 `design_record`，FAIL 阻断编译）；
-- D1 在真实无 Codex 构建上使用；
-- 设计变异 22 份、两轮评审、10 canary；
-- 通过后才冻结 70 次移动端运行；
-- D2/D3/D4b/D5–D8 按设计 RSI 文档推进。
+---
 
-## 2. 依赖图
+## 2. 依赖
 
 ```text
-P0 规格/宿主
-  → P1 no-Codex 基础
-      → P2 DSH Desktop/Headless
-          → P3 API/CLI
-              → P4 no-Codex 完整构建 + carrier
-                  → P5 设计 RSI 运营化 / 70 次门
+P0 contract
+  → P1 CAS/verifier/acceptance
+      → P2 transport
+          → P3 no-Codex full
+              → P4 carrier
+                  → P5 RSI
+O1 optional hardening 可并行，不设门
 ```
 
-设计 RSI 的 D0/D1 可与 P1 并行；D4a 接入在 P1 后；设计变异不依赖模型，可在 P2 期间做；70 次运行必须在 P4 后。
+---
 
-## 3. 不可妥协的门
+## 3. 门禁
 
 | 门 | 不通过时 |
 |---|---|
-| 新 Plan 无 CODEX | 不得发布 |
-| 新 Scope 无 `codex_executable` 必填 | 不得发布 |
-| 运行路径无 `codex` 进程 | 不得宣称“去 Codex 完成” |
-| 真实 sandbox provider（A） | 自动修复探针/配置；3 次失败 → A `BLOCKED_SANDBOX`；不得用 `none`；B 继续 |
-| Desktop handoff 真实证据 | 只能写 `NOT_VERIFIED` |
-| Reviewer 非 Codex | 不得宣称完整无 Codex |
-| 目标 Harness 无 Codex 默认 | 不得发布 |
-| 设计变异通过 | 不得启动 70 次 |
+| contract 边界 | 不得发布 |
+| verifier 独立 | 不得宣称独立验收 |
+| staging/CAS | 不得接受 artifact |
+| controller-only acceptance | 不得发布 |
+| append-only | 不得发布 |
+| 预算/恢复 | 不得自动重试 |
+| timeout/资源 | 不得生产运行 |
+| 无 Codex 新路径 | 不得宣称完成 |
+| carrier 非默认 Codex | 不得发布目标 Harness |
+| sandbox | **不是门**；只有声称安全隔离时才要求 |
 
-## 4. 当前状态（2026-10-26）
+---
 
-- 已完成：v1 的 Phase 0、M0、M1.0/M1.1、D0/D1/D4a、M2.0/M2.1a、iOS/Android 环境；P1 fixture；P2 DSH/API live、headless handoff、Plan/Scope 1.3 live、完整 1.3 CLI 流程（实验性 controller）；
-- 未完成：controller 返修/egress 硬化、GUI-created Desktop session attach、carrier 包清单/能力 carriers、设计变异、70 次；
-- 门禁：70 模块 / 949 项 PASS；
-- 关键事实：A seatbelt 在外层 PASS；B `dsh web` UI 启动但 attach API 未找到；`dsh headless` 真实跑通；DeepSeek API 真实调用/工具循环 PASS；headless session handoff PASS；GUI `standard` preset handoff `SESSION_PRESET_UNSUPPORTED`；
-- 当前证据在 `work/evidence/p1/`、`work/evidence/p2/`；P1/P2 文档随本次提交更新。
+## 4. 当前状态
+
+已完成：
+
+- Carrier 文档/指令发现/CARRIERS.md；
+- Controller 旧事件/read-build/retry/budget/recovery/repair/drift；
+- D4a/D0；
+- DSH/API live（宿主）；
+- 2B Linux VM + bwrap + nft + host gateway（**可选加固证据**）；
+- 2A macOS VM 未完成（介质 25.4GB，不阻塞）。
+
+未完成：
+
+- staging/CAS 实现；
+- 独立 verifier contract；
+- controller acceptance 更新；
+- `TRUSTED_HOST` 正式路径；
+- P3 无 Codex full build；
+- 设计变异/70 次（外部门）；
+- GUI attach（不可用）。
+
+---
 
 ## 5. 下一步
 
-1. 评审并冻结本方案 + spec v2；
-2. 做 P0 probe（DSH headless JSON、session handoff、web API、sandbox 外层）；
-3. 按 P1 开始 Plan/Scope 1.3 与 seatbelt provider；
-4. 在 P2 完成后才继续设计 RSI 的运行层。
+1. P0 评审 v3 方案/spec；
+2. P1 staging/CAS + verifier contract；
+3. P2 DSH/API trusted-host 路径；
+4. P3 无 Codex full build；
+5. carrier/RSI。
 
-> 本路线图不授权执行；技术失败自动修复（最多 3 次），只有 user-owned 门才停；A 的 sandbox 失败只阻塞 A，B 的 `NOT_VERIFIED` 不阻塞 A。
+> 不再以 sandbox/VM 作为计划闭合条件；可选加固保留。
