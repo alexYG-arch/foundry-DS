@@ -201,7 +201,9 @@ class AgentBuildController:
                 command = SimpleNamespace(scope=SimpleNamespace(
                     cwd=attempt_workspace, read_roots=(attempt_workspace, *[Path(root) for root in scope["source_read_roots"]]),
                     write_roots=(attempt_workspace,),
-                    timeout_seconds=scope["command_timeout_seconds"], environment={}))
+                    timeout_seconds=scope["command_timeout_seconds"], environment={},
+                    max_cpu_seconds=scope.get("max_cpu_seconds"), max_memory_bytes=scope.get("max_memory_bytes"),
+                    max_fds=scope.get("max_fds"), max_output_bytes=scope.get("max_output_bytes")))
                 result = adapter.run(AgentRequest(command=command, prompt=self._prompt(task, feedback)),
                                      before_dispatch=lambda: None)
                 artifacts = {}

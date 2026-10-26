@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 
 from .base import SANDBOX_NETWORK_UNSUPPORTED
+from .limits import preexec, truncate_output
 
 
 class TrustedHostProvider:
@@ -33,10 +34,15 @@ class TrustedHostProvider:
             return {"status": "VALIDATION_FAILED", "provider_id": self.provider_id,
                     "reason_code": SANDBOX_NETWORK_UNSUPPORTED, "workload_started": False}
         before_dispatch()
+        max_cpu = getattr(command, "max_cpu_seconds", None)
+        max_memory = getattr(command, "max_memory_bytes", None)
+        max_fds = getattr(command, "max_fds", None)
+        max_output = getattr(command, "max_output_bytes", None)
+        preexec_fn = preexec(max_cpu, max_memory, max_fds) if (max_cpu or max_memory or max_fds) else None
         try:
             observed = subprocess.run(
                 list(command.argv), cwd=str(command.cwd), input=stdin, text=True,
-                capture_output=True, timeout=command.timeout_seconds,
+                capture_output=True, timeout=command.timeout_seconds, preexec_fn=preexec_fn,
                 env=dict(command.environment) if command.environment else None, check=False)
         except subprocess.TimeoutExpired as exc:
             return {"status": "VALIDATION_FAILED", "provider_id": self.provider_id,
@@ -47,6 +53,6 @@ class TrustedHostProvider:
         return {"status": "PASS" if observed.returncode == 0 else "FAIL",
                 "provider_id": self.provider_id, "sandbox_enforcement": "NONE",
                 "assurance": self.assurance, "network_mode": "NONE",
-                "exit_code": observed.returncode, "stdout": observed.stdout,
-                "stderr": observed.stderr, "workload_started": True,
+                "exit_code": observed.returncode, "stdout": truncate_output(observed.stdout, max_output),
+                "stderr": truncate_output(observed.stderr, max_output), "workload_started": True,
                 "workpack_accepted": False}

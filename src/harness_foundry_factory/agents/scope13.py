@@ -17,7 +17,8 @@ SCOPE_FIELDS = {
     "source_read_roots", "verification_root", "task_write_roots", "executables",
     "max_attempts", "max_task_attempts", "command_timeout_seconds", "expires_at",
 }
-OPTIONAL_FIELDS = {"staging_root", "cas_root", "execution"}
+OPTIONAL_FIELDS = {"staging_root", "cas_root", "execution", "max_cpu_seconds",
+                    "max_memory_bytes", "max_fds", "max_output_bytes"}
 AGENT_FIELDS = {"adapter", "executable", "dsh_home", "session", "model", "base_url", "key_file"}
 SANDBOX_FIELDS = {"provider", "network"}
 PROVIDERS = {"seatbelt", "bwrap", "none"}
@@ -59,6 +60,10 @@ def validate_scope_13(plan, scope, *, test_only=False):
         if name in scope:
             _require(isinstance(scope[name], str) and Path(scope[name]).is_absolute(),
                      f"{name} must be an absolute path")
+    for name in ("max_cpu_seconds", "max_memory_bytes", "max_fds", "max_output_bytes"):
+        if name in scope:
+            _require(isinstance(scope[name], int) and not isinstance(scope[name], bool) and scope[name] >= 0,
+                     f"{name} must be a nonnegative integer")
     if "execution" in scope:
         execution = scope["execution"]
         _require(isinstance(execution, dict) and execution.get("mode") in
