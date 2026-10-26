@@ -2,7 +2,7 @@
 
 - 状态：`PROPOSAL_FOR_REVIEW`
 - 日期：2026-10-26
-- 基线：`repo/` commit `eb01bc0`，公开门禁 **62 模块 / 919 项**
+- 基线：`repo/` commit `eb01bc0`，公开门禁 **63 模块 / 923 项**
 - 方案：`Harness_Foundry_升级方案_v2_DeepSeek与无Codex.md`（项目计划目录；本仓库 docs 不复制该文件）
 - 规格：[AGENT_ADAPTER_CONTRACT.md](AGENT_ADAPTER_CONTRACT.md)（v2）
 
@@ -129,10 +129,10 @@ P0 规格/宿主
 ## 4. 当前状态（2026-10-26）
 
 - 已完成：v1 的 Phase 0、M0、M1.0/M1.1、D0/D1/D4a、M2.0/M2.1a、iOS/Android 环境；
-- 未完成：controller `advance-build` 的 1.3 集成、真实 DSH/API transport、carrier、设计变异、70 次；
-- 门禁：62 模块 / 919 项 PASS；
+- 未完成：controller `advance-build` 的 1.3 集成、真实 DSH/API 运行、carrier、设计变异、70 次；
+- 门禁：63 模块 / 923 项 PASS；
 - 关键事实：A seatbelt 在外层 PASS；B `dsh web` UI 启动但 attach API 未找到；`dsh headless` transport PASS 但 **MISSING_CREDENTIAL**；`desktop` profile 由 Electron 独占；DSH session 带锁；
-- 当前 `repo/` commit `ddb8d12`；P1 fixture 垂直切片已实现；证据在 `work/evidence/p1/`。
+- 当前 `repo/` commit 待提交；P1 fixture + P2 DSH transport scaffold 已实现；证据在 `work/evidence/p1/`、`work/evidence/p2/`。
 
 ## 5. 下一步
 

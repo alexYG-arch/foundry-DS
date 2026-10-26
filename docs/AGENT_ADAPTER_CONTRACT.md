@@ -1,9 +1,9 @@
 # Agent Transport 与 Sandbox 规格 v2
 
 - 版本：`AGENT_TRANSPORT_SPEC_V2`
-- 状态：`P1_FIXTURE_E2E_PASS`（Seatbelt + Plan/Scope 1.3 + fixture AGENT dispatch；controller integration 待做）
+- 状态：`P2_TRANSPORT_PARTIAL`（P1 fixture E2E + DSH headless adapter；真实模型运行待 key）
 - 日期：2026-10-26
-- 基线：`eb01bc0`，62 模块 / 919 项门禁（P1 fixture E2E 通过）
+- 基线：`eb01bc0`，63 模块 / 923 项门禁（P2 transport scaffold）
 - 配套方案：`Harness_Foundry_升级方案_v2_DeepSeek与无Codex.md`
 - 取代：`AGENT_ADAPTER_CONTRACT.md` v1 的 M1/M2 适配器部分
 - 保留：`ADR-0001` Scope 版本、`ADR-0003` agents 包；`ADR-0002` 的“Codex sandbox 依赖”被取代
@@ -384,7 +384,7 @@ prompt + tools
 
 ## 8. Plan/Scope 1.3
 
-P1 fixture implementation: `src/harness_foundry_factory/agents/scope13.py` (`validate_scope_13`, `run_agent_workpack`) and `tests/test_agent_scope13.py`. The controller `advance-build` integration is not yet wired; do not treat the fixture path as a production authorization.
+P1 fixture implementation: `src/harness_foundry_factory/agents/scope13.py` (`validate_scope_13`, `run_agent_workpack`) and `tests/test_agent_scope13.py`. P2 transport: `src/harness_foundry_factory/agents/dsh.py` (`DshHeadlessAdapter`), key from `DEEPSEEK_API_KEY` or `~/.dsh/foundry/deepseek.key` (0600). The controller `advance-build` integration is not yet wired; do not treat the fixture/transport path as a production authorization.
 
 ### 8.1 Plan 1.3
 
