@@ -31,7 +31,7 @@
 | D1 DDR | `docs/design/DESIGN_DECISION_RECORD.md`、`design_record.schema.json` | 两个真实需求能填满；简单任务可只填 S1/S2/S5/S6 |
 | D4a 检查 | `tools/check_design_record.py` + 9 个负例测试 | 只在现有 Plan/Scope 数据上判；不依赖 1.4 |
 
-**当前进度（2026-10-26）**：M0、M1.0/M1.1、D0/D1/D4a、**M2.0 declarative profile loader** 已落盘；公开门禁 **60 模块 / 905 项全过**；M2.0 + M2.1a 已落盘（profile、None provider、fixture dispatch）；下一步 M2.1b controller E2E。
+**当前进度（2026-10-26）**：M0、M1.0/M1.1、D0/D1/D4a、M2.0/M2.1a（profile、None provider、fixture dispatch）已落盘；公开门禁 **60 模块 / 905 项全过**；下一步 M2.1b controller E2E。
 
 ### 第 2 阶段：第二个适配器与 Scope 1.3（5–7 周）
 
