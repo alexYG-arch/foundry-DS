@@ -24,9 +24,11 @@ class FlakyAdapter:
         self.fail_first = fail_first
         self.always_fail = always_fail
         self.calls = 0
+        self.prompts = []
 
     def run(self, request, *, before_dispatch, **hooks):
         self.calls += 1
+        self.prompts.append(request.prompt)
         (self.workspace / "proof.txt").write_text("proof.txt")
         failed = self.always_fail or (self.fail_first and self.calls == 1)
         return {"status": "FAIL" if failed else "PASS", "adapter_id": "flaky",
@@ -105,6 +107,7 @@ class AgentControllerTests(unittest.TestCase):
         statuses = [row["payload"]["status"] for row in self.store.list_events(self.program)
                     if row["event_type"] == "BUILD_ATTEMPT_FINISHED"]
         self.assertEqual(statuses, ["REJECTED", "ACCEPTED"])
+        self.assertIn("Previous attempt was rejected", adapter.prompts[1])
 
     def test_controller_task_budget_exhaustion(self):
         adapter = FlakyAdapter(self.workspace, always_fail=True)

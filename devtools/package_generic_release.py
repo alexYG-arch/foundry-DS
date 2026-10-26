@@ -200,6 +200,7 @@ def collect_files(source_root=ROOT):
     sources.update({f"examples/{name}": f"examples/{name}" for name in EXAMPLES})
     sources.update({"LICENSE": "LICENSE", "AGENTS.md": "resources/generic_release/AGENTS.md",
                     "examples/capability-adapters/README.md": "resources/generic_release/CAPABILITY_HELPERS.md",
+                    "CARRIERS.md": "resources/generic_release/CARRIERS.md",
                     "README.md": "resources/generic_release/README.md",
                     "tools/hffactory.py": "resources/generic_release/hffactory.py",
                     "src/harness_foundry_factory/__init__.py": "resources/generic_release/__init__.py",

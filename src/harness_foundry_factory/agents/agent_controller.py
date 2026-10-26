@@ -46,11 +46,14 @@ class AgentBuildController:
         raise ValueError(f"unsupported agent adapter: {definition['adapter']}")
 
     @staticmethod
-    def _prompt(task):
+    def _prompt(task, feedback=None):
         artifacts = ", ".join(item["path"] for item in task["artifacts"])
-        return (f"Implement workpack {task['workpack_id']} in the current workspace. "
-                f"Goal: {task['goal']}. Write only declared artifacts: {artifacts}. "
-                "Do not claim acceptance. Use the provided tools and finish with a short report.")
+        prompt = (f"Implement workpack {task['workpack_id']} in the current workspace. "
+                  f"Goal: {task['goal']}. Write only declared artifacts: {artifacts}. "
+                  "Do not claim acceptance. Use the provided tools and finish with a short report.")
+        if feedback:
+            prompt += "\nPrevious attempt was rejected; fix the observed failure rather than repeating it.\n" + feedback
+        return prompt
 
     def _verify(self, task, scope, workspace):
         results = []
@@ -97,6 +100,7 @@ class AgentBuildController:
             adapter = (self.adapter_factory(task, scope) if self.adapter_factory
                        else self._default_adapter(task, scope))
             task_attempts = 0
+            feedback = None
             while True:
                 if used >= scope["max_attempts"]:
                     return {"status": "ATTEMPT_BUDGET_EXHAUSTED", "accepted_workpacks": accepted,
@@ -124,7 +128,7 @@ class AgentBuildController:
                     cwd=workspace, read_roots=(workspace, *[Path(root) for root in scope["source_read_roots"]]),
                     write_roots=tuple(Path(root) for root in scope["task_write_roots"][task["workpack_id"]]),
                     timeout_seconds=scope["command_timeout_seconds"], environment={}))
-                result = adapter.run(AgentRequest(command=command, prompt=self._prompt(task)),
+                result = adapter.run(AgentRequest(command=command, prompt=self._prompt(task, feedback)),
                                      before_dispatch=lambda: None)
                 artifacts = {}
                 artifact_error = None
@@ -160,6 +164,8 @@ class AgentBuildController:
                             "verification": verification, "accepted_workpacks": accepted,
                             "attempts_used": used, "execution_started": True,
                             "harness_e2e_verified": False}
+                feedback = str({"artifact_error": artifact_error,
+                                "verification": verification})[:2000]
                 if used >= scope["max_attempts"]:
                     return {"status": "ATTEMPT_BUDGET_EXHAUSTED", "workpack_id": task["workpack_id"],
                             "attempt_id": attempt_id, "artifact_error": artifact_error,

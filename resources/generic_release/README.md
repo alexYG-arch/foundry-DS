@@ -36,6 +36,8 @@ layout before dispatch with `SHARED_TEMP_ISOLATION_UNSUPPORTED`; this is a suppo
 restriction, not a fix to the underlying agent sandbox. Use an independent ordinary
 project directory and check the actual native read/write boundaries before a run.
 
+Carrier support and instruction discovery are documented in [CARRIERS.md](CARRIERS.md).
+
 The agent prepares public CLI requests following [Build CLI](docs/GENERIC_BUILD_CLI.md),
 [Plan](docs/GENERIC_BUILD_PLAN.md), [sources](docs/GENERIC_SOURCE_INTAKE.md),
 [acceptance contracts](docs/ACCEPTANCE_CONTRACT_ALIGNMENT.md) and
