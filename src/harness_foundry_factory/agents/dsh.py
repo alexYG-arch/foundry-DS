@@ -20,7 +20,8 @@ BLOCKED_CREDENTIAL = "BLOCKED_CREDENTIAL"
 class DshHeadlessAdapter:
     """Drive ``dsh --profile headless --json`` and retain its raw events."""
 
-    def __init__(self, executable, dsh_home, *, key_file=None, timeout_seconds=1800, session_id=None):
+    def __init__(self, executable, dsh_home, *, key_file=None, timeout_seconds=1800,
+                 session_id=None, proxy_url=None):
         self.executable = Path(executable)
         self.dsh_home = Path(dsh_home)
         self.key_file = Path(key_file) if key_file is not None else self.dsh_home / "foundry" / "deepseek.key"
@@ -29,6 +30,7 @@ class DshHeadlessAdapter:
             if not isinstance(session_id, str) or not session_id.strip() or any(c in session_id for c in "\x00\r\n"):
                 raise ValueError("session_id must be nonempty text without NUL/newlines")
         self.session_id = session_id
+        self.proxy_url = proxy_url
         self.capabilities = AgentCapabilities(
             adapter_id="dsh-headless", adapter_version="1", prompt_transport="stdin",
             events="jsonl", usage="UNKNOWN", defaults="EXPLICIT_ONLY",
@@ -71,6 +73,12 @@ class DshHeadlessAdapter:
         environment["DSH_HOME"] = str(self.dsh_home)
         if key is not None:
             environment["DEEPSEEK_API_KEY"] = key
+        if self.proxy_url:
+            for name in ("HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"):
+                environment[name] = self.proxy_url
+            environment["NODE_USE_ENV_PROXY"] = "1"
+            environment.pop("NO_PROXY", None)
+            environment.pop("no_proxy", None)
         return environment
 
     @staticmethod

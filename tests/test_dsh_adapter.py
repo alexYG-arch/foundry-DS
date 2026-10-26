@@ -73,6 +73,14 @@ class DshHeadlessAdapterTests(unittest.TestCase):
         self.assertEqual(result["reason_code"], BLOCKED_CREDENTIAL)
         self.assertFalse(result["workload_started"])
 
+    def test_proxy_environment_is_injected(self):
+        adapter = DshHeadlessAdapter(self.dsh, self.dsh_home, key_file=self.key_file,
+                                     proxy_url="http://127.0.0.1:12345")
+        env = adapter._environment("fake-key")
+        self.assertEqual(env["HTTPS_PROXY"], "http://127.0.0.1:12345")
+        self.assertEqual(env["NODE_USE_ENV_PROXY"], "1")
+        self.assertNotIn("NO_PROXY", env)
+
     def test_environment_key_is_supported(self):
         with patch.dict(os.environ, {"DEEPSEEK_API_KEY": "fake-env-key"}, clear=False):
             adapter = DshHeadlessAdapter(self.dsh, self.dsh_home, key_file=self.root / "absent.key")
