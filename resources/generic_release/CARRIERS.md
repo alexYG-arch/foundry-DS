@@ -5,7 +5,7 @@ Scope/Plan and record the instruction files it actually reads.
 
 | Carrier | Instruction discovery | Runtime path | Status |
 |---|---|---|---|
-| Codex | `AGENTS.override.md`, `AGENTS.md` | legacy `agents/codex.py` (1.0–1.2 compatibility) | legacy |
+| Codex (legacy only) | `AGENTS.override.md`, `AGENTS.md` | legacy `agents/codex.py` (1.0–1.2 compatibility) | legacy |
 | DSH | `AGENTS.override.md`, `AGENTS.md` | `agents/dsh.py` (`dsh --profile headless --json`) | first-class |
 | Claude-style | `CLAUDE.md` | declarative/adapter path | instruction discovery supported; adapter not certified |
 | Generic CLI | `AGENTS.override.md`, `AGENTS.md` by default; profile may declare another | declarative profile | contract only |

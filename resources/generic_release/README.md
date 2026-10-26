@@ -4,7 +4,7 @@ Product version **1.0.0**; protocol **2.9**. This is the v1.0.0 release runtime.
 It adds declared verification resources, protected product copies, controlled repair
 and single-attempt handoff. Existing published releases remain unchanged.
 
-Open this directory in Codex, DSH, or another compatible agent host. Its local `harness-foundry-build` Skill
+Open this directory in DSH/DeepSeek or another compatible agent host; Codex is legacy-only for 1.0–1.2. Its local `harness-foundry-build` Skill
 guides a build from clarified requirements and a human-reviewed build document.
 The selected agent performs reasoning and coding; local deterministic stages and independent
 checks are controlled by the same approved scope. No private author workspace,
@@ -25,9 +25,10 @@ start construction merely because all questions or automatic checks are satisfie
 After confirmation it presents a separate bounded runtime scope. That approval
 covers in-scope execution, checking, repair and resume, not publication or expansion.
 No account tokens or author configuration are bundled. Use your own legitimate
-agent login. Native execution currently targets POSIX hosts and requires explicit
+DSH/DeepSeek (or legacy Codex) login. Native execution currently targets POSIX hosts and requires explicit
 agent executable, model/service, local tool and instruction-read bindings; a
-Python import smoke is not native sandbox acceptance. No silent model fallback.
+Python import smoke is not native sandbox acceptance. New v3 builds use contract
+independence and may use `TRUSTED_HOST` without claiming a syscall sandbox. No silent model fallback.
 
 On macOS, do not put this runtime, inputs, verifier, controller or target in shared
 `/tmp` (including its `/private/tmp` alias). The current native receiver did not

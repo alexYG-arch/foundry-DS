@@ -29,7 +29,7 @@ PACKAGE_MODULES = {"agents": ("__init__", "base", "codex", "profile", "sandbox_n
 ALLOWED_TOP_LEVEL = frozenset(MODULES) | frozenset(PACKAGE_MODULES)
 
 DOCS = ("RSI_ADOPTION", "RSI_CASE_INTAKE", "RSI_REVIEW_AND_TDD", "RSI_WIKI", "RSI_DELIVERY", "GENERIC_BUILD_PLAN", "HARNESS_DESIGN_GUIDE", "GENERIC_BUILD_CLI", "GENERIC_BUILD_RUNTIME",
-        "GENERIC_SOURCE_INTAKE", "CAPABILITY_REFERENCE", "ACCEPTANCE_CONTRACT_ALIGNMENT", "FOUNDRY_UPGRADE_2026_10_10", "CLEAR_COMMUNICATION")
+        "GENERIC_SOURCE_INTAKE", "CAPABILITY_REFERENCE", "ACCEPTANCE_CONTRACT_ALIGNMENT", "FOUNDRY_UPGRADE_2026_10_10", "CLEAR_COMMUNICATION", "AGENT_ADAPTER_CONTRACT", "FOUNDRY_ROADMAP_2026Q4")
 EXAMPLES = ("task-cli/PRD.md", "csv-increment/PROJECT_BRIEF.md",
             "harness-design/offline-naming.md", "harness-design/audio-handoff.md",
             "capability-adapters/prepare.py", "capability-adapters/environment.py",
@@ -197,6 +197,7 @@ def collect_files(source_root=ROOT):
             relative = f"src/harness_foundry_factory/{package}/{name}.py"
             sources[relative] = relative
     sources.update({f"docs/{name}.md": f"docs/{name}.md" for name in DOCS})
+    sources["docs/decisions/ADR-0004-CONTRACT-INDEPENDENCE.md"] = "docs/decisions/ADR-0004-CONTRACT-INDEPENDENCE.md"
     sources.update({f"examples/{name}": f"examples/{name}" for name in EXAMPLES})
     sources.update({"LICENSE": "LICENSE", "AGENTS.md": "resources/generic_release/AGENTS.md",
                     "examples/capability-adapters/README.md": "resources/generic_release/CAPABILITY_HELPERS.md",

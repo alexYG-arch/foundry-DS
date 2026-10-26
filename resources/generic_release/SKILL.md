@@ -5,7 +5,7 @@ description: Build and validate a carrier-neutral Harness from reviewed requirem
 
 # Foundry generic build
 
-Use the selected agent (Codex, DSH, or another compatible host) for understanding and implementation, and the packaged CLI for durable
+Use the selected agent (DSH/DeepSeek, or another compatible host; Codex is legacy-only) for understanding and implementation, and the packaged CLI for durable
 scope, dependency, execution and independent acceptance control. No fixed business
 pipeline, model self-approval or user-copied Hash is required.
 
