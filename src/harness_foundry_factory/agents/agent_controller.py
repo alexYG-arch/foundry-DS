@@ -22,9 +22,11 @@ from .dsh import DshHeadlessAdapter
 from .api import DeepseekApiAdapter
 from .sandbox_seatbelt import SeatbeltSandboxProvider
 from .sandbox_bwrap import BubblewrapSandboxProvider
+from .sandbox_trusted import TrustedHostProvider
 from .scope13 import validate_scope_13
 from .artifacts import ingest as ingest_artifacts
 from .verifier import VerifierContract, VerifierContractError
+from .verifier_runner import run_verifier
 
 
 def _event(events, event_id, kind):
@@ -39,9 +41,7 @@ class AgentBuildController:
         self.store = store
         self.program_id = program_id
         self.adapter_factory = adapter_factory
-        self.provider = provider or (SeatbeltSandboxProvider()
-                                      if Path("/usr/bin/sandbox-exec").is_file()
-                                      else BubblewrapSandboxProvider())
+        self.provider = provider
 
     def _default_adapter(self, task, scope):
         definition = next((row for row in scope["agents"].values()
@@ -70,6 +70,13 @@ class AgentBuildController:
             prompt += "\nPrevious attempt was rejected; fix the observed failure rather than repeating it.\n" + feedback
         return prompt
 
+    def _provider(self, scope):
+        if self.provider is not None:
+            return self.provider
+        if scope.get("execution", {}).get("mode") == "TRUSTED_HOST":
+            return TrustedHostProvider()
+        return SeatbeltSandboxProvider() if Path("/usr/bin/sandbox-exec").is_file() else BubblewrapSandboxProvider()
+
     def _verify(self, task, scope, workspace):
         results = []
         for check in task["verification"]:
@@ -85,7 +92,7 @@ class AgentBuildController:
                                       read_roots=[workspace, Path(scope["verification_root"])],
                                       write_roots=[], timeout_seconds=scope["command_timeout_seconds"],
                                       environment={}, network=None)
-            observed = self.provider.run(command, before_dispatch=lambda: None)
+            observed = self._provider(scope).run(command, before_dispatch=lambda: None)
             results.append({"case_id": check["case_id"], "result": {key: observed.get(key) for key in
                             ("status", "provider_id", "exit_code", "stdout", "stderr")}})
             if observed.get("status") != "PASS":
@@ -151,12 +158,13 @@ class AgentBuildController:
                        else self._default_adapter(task, scope))
             agent_sandbox = getattr(getattr(adapter, "capabilities", None), "sandbox", "UNKNOWN")
             verifier_identity = None
+            verifier_contract = None
             if "verifier" in task:
                 try:
-                    contract = VerifierContract.from_dict(task["verifier"])
-                    verifier_identity = contract.verify_files(
-                        Path(scope["verification_root"]) / contract.code_ref,
-                        Path(scope["verification_root"]) / contract.expected_ref)
+                    verifier_contract = VerifierContract.from_dict(task["verifier"])
+                    verifier_identity = verifier_contract.verify_files(
+                        Path(scope["verification_root"]) / verifier_contract.code_ref,
+                        Path(scope["verification_root"]) / verifier_contract.expected_ref)
                 except (OSError, ValueError, VerifierContractError) as exc:
                     return {"status": "HELD_VERIFIER_IDENTITY", "workpack_id": task["workpack_id"],
                             "diagnostic": str(exc), "execution_started": False,
@@ -225,18 +233,29 @@ class AgentBuildController:
                 except (OSError, ValueError) as exc:
                     artifact_error = str(exc)
                 verification = [] if artifact_error else self._verify(task, scope, verification_root)
+                verifier_result = None
+                if verifier_contract is not None and use_cas and artifact_error is None:
+                    try:
+                        verifier_result = run_verifier(
+                            verifier_contract, verifier_root=scope["verification_root"], cas_root=cas_root,
+                            case_id=task["workpack_id"], provider=self._provider(scope))
+                    except (OSError, ValueError) as exc:
+                        verifier_result = {"status": "BLOCKED", "reason_code": "VERIFIER_RUN_FAILED",
+                                           "diagnostic": str(exc), "acceptance": False}
                 if use_cas:
                     shutil.rmtree(verification_root, ignore_errors=True)
                 passed = (result.get("status") == "PASS" and artifact_error is None
-                          and bool(verification) and all(row["result"].get("status") == "PASS" for row in verification))
+                          and bool(verification) and all(row["result"].get("status") == "PASS" for row in verification)
+                          and (verifier_result is None or verifier_result.get("status") == "PASS"))
                 payload = {**started, "status": "ACCEPTED" if passed else "REJECTED",
                            "artifacts": artifacts, "artifact_error": artifact_error,
                            "verification": verification,
                            "effects": {"status": "NOT_OBSERVED", "external_effects_verified": False},
                            "result": result, "workpack_accepted": passed, "cas_manifest": cas_manifest,
                            **({"verifier_identity": verifier_identity} if verifier_identity is not None else {}),
+                           **({"verifier_result": verifier_result} if verifier_result is not None else {}),
                            "agent_sandbox_enforcement": getattr(getattr(adapter, "capabilities", None), "sandbox", "UNKNOWN"),
-                           "task_sandbox_provider": getattr(self.provider, "provider_id", "UNKNOWN")}
+                           "task_sandbox_provider": self._provider(scope).provider_id}
                 self.store.append_batch(self.program_id, [{"event_type": "BUILD_ATTEMPT_FINISHED",
                     "payload": payload}], expected_revision=len(events),
                     idempotency_key=attempt_id + ":finish",
@@ -271,5 +290,5 @@ class AgentBuildController:
         return {"status": "PLAN_CHECKS_ACCEPTED", "accepted_workpacks": accepted,
                 "attempts_used": used, "agent_controller": "EXPERIMENTAL_1_3",
                 "agent_sandbox_enforcement": agent_sandbox,
-                "task_sandbox_provider": getattr(self.provider, "provider_id", "UNKNOWN"),
+                "task_sandbox_provider": self._provider(scope).provider_id,
                 "harness_e2e_verified": False}

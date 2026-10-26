@@ -1,8 +1,8 @@
 # Foundry 路线图 v3：Contract Independence
 
-- 状态：`P1_IN_PROGRESS`
+- 状态：`P2_TRUSTED_HOST`
 - 日期：2026-10-26
-- 基线：`repo/` commit `eb01bc0`，公开门禁 **74 模块 / 960 项**
+- 基线：`repo/` commit `eb01bc0`，公开门禁 **75 模块 / 962 项**
 - 方案：`Harness_Foundry_升级方案_v3_ContractIndependence.md`（项目计划目录）
 - 规格：[AGENT_ADAPTER_CONTRACT.md](AGENT_ADAPTER_CONTRACT.md)（v3）
 - 决策：[ADR-0004-CONTRACT-INDEPENDENCE.md](decisions/ADR-0004-CONTRACT-INDEPENDENCE.md)

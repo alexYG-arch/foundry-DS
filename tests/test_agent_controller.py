@@ -233,7 +233,7 @@ class AgentControllerTests(unittest.TestCase):
     def test_controller_checks_independent_verifier_hash_before_dispatch(self):
         import hashlib, json as _json
         code = self.verifier / "check.py"; expected = self.verifier / "expected.json"
-        code.write_text("print('ok')\n")
+        code.write_text("import json; print(json.dumps({'status':'PASS'}))\n")
         expected.write_text('{"ok": true}\n')
         plan = _json.loads(_json.dumps(self.plan))
         task = plan["workpacks"][0]

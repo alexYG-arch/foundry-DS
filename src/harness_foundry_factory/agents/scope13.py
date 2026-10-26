@@ -17,7 +17,7 @@ SCOPE_FIELDS = {
     "source_read_roots", "verification_root", "task_write_roots", "executables",
     "max_attempts", "max_task_attempts", "command_timeout_seconds", "expires_at",
 }
-OPTIONAL_FIELDS = {"staging_root", "cas_root"}
+OPTIONAL_FIELDS = {"staging_root", "cas_root", "execution"}
 AGENT_FIELDS = {"adapter", "executable", "dsh_home", "session", "model", "base_url", "key_file"}
 SANDBOX_FIELDS = {"provider", "network"}
 PROVIDERS = {"seatbelt", "bwrap", "none"}
@@ -59,6 +59,11 @@ def validate_scope_13(plan, scope, *, test_only=False):
         if name in scope:
             _require(isinstance(scope[name], str) and Path(scope[name]).is_absolute(),
                      f"{name} must be an absolute path")
+    if "execution" in scope:
+        execution = scope["execution"]
+        _require(isinstance(execution, dict) and execution.get("mode") in
+                 {"TRUSTED_HOST", "UID", "VM", "SANDBOX"},
+                 "execution.mode is unsupported")
     if "staging_root" in scope and "cas_root" in scope:
         staging, cas = Path(scope["staging_root"]).resolve(), Path(scope["cas_root"]).resolve()
         _require(not staging.is_relative_to(cas) and not cas.is_relative_to(staging),

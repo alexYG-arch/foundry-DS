@@ -90,6 +90,7 @@ REQUIRED_MODULES = (
     "test_artifacts_cas",
     "test_verifier_contract",
     "test_execution_limits",
+    "test_verifier_runner",
     "test_check_design_record",
 )
 
