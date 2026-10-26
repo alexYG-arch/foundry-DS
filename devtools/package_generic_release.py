@@ -23,7 +23,7 @@ MODULES = (
     "rsi_adoption", "rsi_cases", "rsi_review", "rsi_tdd", "rsi_wiki", "rsi_delivery",
     "identity", "python_startup", "build_capabilities", "build_observation", "build_types", "build_cli", "build_display", "build_authoring", "build_plan", "build_review",
     "build_runtime", "build_reconciliation", "build_reassessment", "build_correction", "build_preview", "build_check_protocol", "build_rebind", "build_resource_lifecycle", "build_state", "build_artifacts", "build_effects", "build_replan", "build_repair", "build_entrypoint", "source_intake", "acceptance_contract", "revision_store",
-    "local_process", "coding_process", "coding_defaults", "coding_events", "process_observation", "verification_resources", "verification_snapshot", "resource_observation", "resource_network", "resource_credentials", "legacy_history", "test_execution",
+    "agent_contract", "agent_codex", "local_process", "coding_process", "coding_defaults", "coding_events", "process_observation", "verification_resources", "verification_snapshot", "resource_observation", "resource_network", "resource_credentials", "legacy_history", "test_execution",
 )
 DOCS = ("RSI_ADOPTION", "RSI_CASE_INTAKE", "RSI_REVIEW_AND_TDD", "RSI_WIKI", "RSI_DELIVERY", "GENERIC_BUILD_PLAN", "HARNESS_DESIGN_GUIDE", "GENERIC_BUILD_CLI", "GENERIC_BUILD_RUNTIME",
         "GENERIC_SOURCE_INTAKE", "CAPABILITY_REFERENCE", "ACCEPTANCE_CONTRACT_ALIGNMENT", "FOUNDRY_UPGRADE_2026_10_10", "CLEAR_COMMUNICATION")

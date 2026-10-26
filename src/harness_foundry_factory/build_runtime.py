@@ -556,16 +556,26 @@ class NativeBuildRunner:
         hooks.update(resource_dispatch_hooks(invocation, observation))
         try:
             if invocation["executor"] == "CODEX":
-                from .coding_process import CodingCommand, CodexCodingRunner
-                result = CodexCodingRunner(scope["codex_executable"]).run(
-                    CodingCommand(command, invocation["prompt"], model=scope["model"],
-                                  reasoning_effort=scope.get("model_reasoning_effort"),
-                                  model_policy=scope.get("model_policy", "FIXED"),
-                                  model_service=scope.get("model_service"),
-                                  model_defaults_source=invocation.get("model_defaults_source")),
+                from .agent_codex import CodexCliAdapter
+                from .agent_contract import AgentRequest
+                from .coding_process import CodingCommand
+                coding = CodingCommand(command, invocation["prompt"], model=scope["model"],
+                                       reasoning_effort=scope.get("model_reasoning_effort"),
+                                       model_policy=scope.get("model_policy", "FIXED"),
+                                       model_service=scope.get("model_service"),
+                                       model_defaults_source=invocation.get("model_defaults_source"))
+                result = CodexCliAdapter(scope["codex_executable"]).run(
+                    AgentRequest(command=coding, prompt=invocation["prompt"], model=scope["model"],
+                                 reasoning_effort=scope.get("model_reasoning_effort"),
+                                 model_policy=scope.get("model_policy", "FIXED"),
+                                 model_service=scope.get("model_service"),
+                                 model_defaults_source=invocation.get("model_defaults_source")),
                     before_dispatch=before_dispatch, **hooks)
             else:
-                result = CodexSandboxRunner(scope["codex_executable"]).run(command, before_dispatch=before_dispatch, **hooks)
+                from .agent_codex import CodexSandboxProvider
+                result = CodexSandboxProvider(scope["codex_executable"],
+                                              runner_class=CodexSandboxRunner).run(
+                    command, before_dispatch=before_dispatch, **hooks)
             if invocation["phase"] == "VERIFICATION" and "resource_binding" not in invocation:
                 result = classify_verification_result(result)
             if observation is not None:

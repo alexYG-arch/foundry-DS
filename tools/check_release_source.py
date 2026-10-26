@@ -70,6 +70,8 @@ REQUIRED_MODULES = (
     "test_route_retirement",
     "test_test_execution",
     "test_release_acceptance_adapters",
+    "test_agent_contract",
+    "test_check_design_record",
 )
 
 
