@@ -71,6 +71,15 @@ def _check(condition, message):
 
 
 def _check_native_layout(store, scope, source=None):
+    if "codex_executable" not in scope:
+        paths = [store.database_path, Path(__file__), scope["workspace_root"], scope["verification_root"],
+                 *scope["source_read_roots"], *scope["executables"].values(),
+                 *[row["executable"] for row in scope.get("agents", {}).values()]]
+        if source is not None:
+            paths.extend(Path(source["source_root"]) / entry["path"] for entry in source["manifest"])
+        _check(not unsupported_isolation_paths(paths),
+               "SHARED_TEMP_ISOLATION_UNSUPPORTED: macOS /tmp cannot protect controller, verifier, source or target boundaries; use a verified non-shared directory")
+        return
     paths = [store.database_path, Path(__file__), scope["workspace_root"], scope["verification_root"],
              *scope["source_read_roots"], *scope["executables"].values(), scope["codex_executable"]]
     if "verification_resources" in scope:
@@ -349,6 +358,19 @@ def prepare_build_scope(store, ir, plan, source, scope, *, created_at,
     return payload
 
 
+def prepare_agent_scope(store, ir, plan, source, scope, *, created_at):
+    """Validate a Plan/Scope 1.3 preparation without a Codex receiver."""
+    from .agents.scope13 import validate_scope_13
+    validate_build_plan(ir, plan)
+    validate_requirement_source_bindings(ir, source["snapshot"])
+    contracts = validate_acceptance_contracts(ir, snapshot=source["snapshot"], required=True)
+    scope = deepcopy(scope)
+    validate_scope_13(plan, scope)
+    _check(_utc(created_at) < _utc(scope["expires_at"]), "authorization already expired")
+    _check_native_layout(store, scope, source)
+    return {"scope": scope, "plan": plan, "verifier_files": {}, "acceptance_contracts": contracts}
+
+
 def prepare_build_authorization(store, program_id, proposal_event_id, source_event_id, scope, *,
                                 expected_revision, idempotency_key, created_at, rebind_from=None, follow_codex_defaults=False, prepared_preview=None):
     """Save a readable scope challenge, not authority. Creates no target paths."""
@@ -383,8 +405,11 @@ def prepare_build_authorization(store, program_id, proposal_event_id, source_eve
     validate_review_sources(review, ir, source_root=source["payload"]["source_root"], snapshot=source["payload"]["snapshot"])
     if rebind_from is not None:
         validate_rebind(events, rebind_from, proposal["payload"], scope)
-    prepared = prepare_build_scope(store, ir, plan, source["payload"], scope,
-        created_at=created_at, follow_codex_defaults=follow_codex_defaults, prepared_preview=prepared_preview)
+    prepared = (prepare_agent_scope(store, ir, plan, source["payload"], scope, created_at=created_at)
+                if plan.get("schema_version") == "1.3" else
+                prepare_build_scope(store, ir, plan, source["payload"], scope,
+                    created_at=created_at, follow_codex_defaults=follow_codex_defaults,
+                    prepared_preview=prepared_preview))
     return store.append_batch(program_id, [{"event_type": "BUILD_AUTHORIZATION_PREPARED", "payload": {
         "proposal_event_id": proposal_event_id, "source_event_id": source_event_id, **prepared,
         **({"rebind_from": rebind_from} if rebind_from is not None else {}),

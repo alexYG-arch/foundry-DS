@@ -1,7 +1,7 @@
 # Agent Transport 与 Sandbox 规格 v2
 
 - 版本：`AGENT_TRANSPORT_SPEC_V2`
-- 状态：`P2_AGENT_CONTROLLER_EXPERIMENTAL`（DSH/API live；`advance-build` 对带 `plan` 的 1.3 prepared event 有实验分支；生产 1.3 prepare/controller 待接）
+- 状态：`P2_AGENT_CONTROLLER_EXPERIMENTAL`（DSH/API live；`advance-build` 对带 `plan` 的 1.3 prepared event 有实验分支；prepare_agent_scope 分支已加；生产 CLI 集成测试待做）
 - 日期：2026-10-26
 - 基线：`eb01bc0`，65 模块 / 929 项门禁（P2 DSH/API + experimental 1.3 controller）
 - 配套方案：`Harness_Foundry_升级方案_v2_DeepSeek与无Codex.md`
