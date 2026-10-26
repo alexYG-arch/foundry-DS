@@ -254,7 +254,7 @@ which the one-shot runner does not compose
 
 验收：桌面创建 session → Foundry handoff → 产物 → 独立检查 → 接受；全程无 Codex。
 
-#### B-1. `WEB_API`（B 工作流 P2.1，需 probe）
+#### B-1. `WEB_API`（B 工作流 P2.1，probe 结果：仅 `/api/file`，无会话 attach）
 
 ```bash
 dsh --profile web --host 127.0.0.1 --port 0 --no-open
