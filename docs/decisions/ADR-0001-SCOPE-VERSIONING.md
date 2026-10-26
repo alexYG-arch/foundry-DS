@@ -1,3 +1,5 @@
+> **2026-10-26 补充**：Scope 1.3 的字段以 `docs/AGENT_ADAPTER_CONTRACT.md` v2 为准；`codex_executable` 只保留给 1.0–1.2 只读兼容，新 1.3 不再要求。
+
 # ADR-0001：Scope 版本化
 
 - 状态：`ACCEPTED_FOR_M0`（决策已定，代码未实现）

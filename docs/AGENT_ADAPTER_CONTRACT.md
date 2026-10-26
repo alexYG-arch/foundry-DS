@@ -1,129 +1,481 @@
-# Agent Adapter Contract（M0）
+# Agent Transport 与 Sandbox 规格 v2
 
-- 版本：`AGENT_ADAPTER_CONTRACT_V1`
-- 状态：`M2_1A_IMPLEMENTED`（M0 契约；M1.0/M1.1 包、M2.0 profile、M2.1a None provider + fixture dispatch 已落地；controller E2E 待 M2.1b）
+- 版本：`AGENT_TRANSPORT_SPEC_V2`
+- 状态：`PROPOSAL_FOR_REVIEW`
 - 日期：2026-10-26
-- 关联：`ADR-0001`（Scope 版本）、`ADR-0002`（沙箱边界）、`docs/CODING_COMMAND_PROTOCOL.md`
-- 非目标：本契约不定义模型调用协议、不实现第二个真实沙箱、不改变 Plan 1.0–1.2 语义。
+- 基线：`eb01bc0`，60 模块 / 905 项门禁
+- 配套方案：`Harness_Foundry_升级方案_v2_DeepSeek与无Codex.md`
+- 取代：`AGENT_ADAPTER_CONTRACT.md` v1 的 M1/M2 适配器部分
+- 保留：`ADR-0001` Scope 版本、`ADR-0003` agents 包；`ADR-0002` 的“Codex sandbox 依赖”被取代
 
-## 0. 不可违反的约束
+---
 
-1. 模型/agent 输出永远不是 `ACCEPTED`；验收只由独立检查产生。
-2. 没有声明或探测失败的 adapter/provider 一律 fail-closed，不猜默认。
-3. 原始字节永远保留；归一化事件是派生数据，不能覆盖原始 capture。
-4. usage 拿不到就记 `UNKNOWN`，不能显示为 0。
-5. 没有显式 `allow_unsandboxed_agent=true` 时，不允许 `sandbox.provider="none"`。
-6. 旧计划（1.0–1.2）继续走旧映射；新能力只对 1.3 生效（见 ADR-0001）。
+## 0. 范围
 
-## 1. 两个接口
+本规格定义：
+
+- Foundry 如何调用 DeepSeek 的四种形态：DSH Desktop、DSH 子进程、DeepSeek CLI、DeepSeek API；
+- 如何在没有 Codex 的机器上完成“实现 → 独立检查 → 接受/返修/恢复”；
+- 如何约束 agent 进程、任务命令、网络和工具调用；
+- Plan/Scope 1.3 的数据形状；
+- 可执行的 probe、失败码和验收矩阵。
+
+本规格不定义：
+
+- DSH 内部模型/插件实现；
+- 任意 GUI 自动化；
+- Codex 旧计划的迁移（只读兼容）；
+- 设计 RSI 的 S0–S7 细节（见设计 RSI 文档）。
+
+---
+
+## 1. 术语与分层
+
+| 层 | 职责 | 不负责 |
+|---|---|---|
+| `ExecutionHost` | Foundry 进程所在的宿主；决定 OS 沙箱是否可嵌套 | 不解释模型输出 |
+| `FoundryController` | Plan/Scope、预算、事件、独立检查、接受 | 不信任模型报告 |
+| `AgentTransport` | 如何启动/连接 agent、如何读事件、如何结束 | 不决定验收 |
+| `AgentAdapter` | 某个 runtime 的 transport 实现 + 能力声明 | 不绕过 Scope |
+| `SandboxProvider` | 把 argv/进程关进 OS 权限边界 | 不选模型 |
+| `ToolExecutor` | API 模式下执行读/写/运行工具 | 不直接写未授权路径 |
+
+### 1.1 两条网络
+
+- **Agent egress**：agent 访问模型 API/本地 DSH 服务的网络；
+- **Task network**：Workpack 的 LOCAL/验证命令可访问的网络。
+
+两者必须分开声明、分开审批。Agent 能访问模型，不代表任务命令能访问任意网络。
+
+---
+
+## 2. 通用协议
 
 ```python
 @dataclass(frozen=True)
 class AgentCapabilities:
-    adapter_id: str          # "codex-cli" / "fixture-agent" / "claude-code" / "generic-cli"
-    adapter_version: str     # 契约版本，不是 agent 版本
-    prompt_transport: str    # "stdin" | "arg" | "file"
-    events: str              # "jsonl" | "text"
-    usage: str               # "REPORTED" | "UNKNOWN"
-    defaults: str            # "READABLE" | "EXPLICIT_ONLY"
-    handoff: bool            # 是否支持人工接手后一次性交回
-    sandbox: str             # "PROVIDER" | "NATIVE" | "NONE"
+    transport: str                  # "dsh-desktop" | "dsh-headless" | "deepseek-cli" | "deepseek-api"
+    adapter_version: str
+    prompt_transport: str           # "stdin" | "argv" | "http"
+    events: str                     # "ndjson" | "sse" | "text"
+    usage: str                      # "REPORTED" | "UNKNOWN"
+    session: str                    # "NEW_ONLY" | "HANDOFF" | "RESUME"
+    tool_calls: str                 # "NATIVE" | "CONTROLLER" | "NONE"
+    sandbox: str                    # "PROVIDER" | "NATIVE" | "NONE"
+    desktop: str                    # "NONE" | "HANDOFF" | "ATTACH"
 
-class AgentAdapter(Protocol):
-    capabilities: AgentCapabilities
-    def probe(self, executable: Path) -> dict: ...
-    def run(self, request: "AgentRequest", *, before_dispatch, observation=None,
-            cancellation_reason=None) -> dict: ...
+class AgentTransport(Protocol):
+    transport_id: str
+    def probe(self, scope) -> dict: ...
+    def start(self, request: "AgentRequest", *, before_dispatch) -> "AgentRun": ...
+    def events(self, run: "AgentRun") -> Iterator["AgentEvent"]: ...
+    def finish(self, run: "AgentRun") -> "AgentResult": ...
 
 class SandboxProvider(Protocol):
-    provider_id: str          # "codex-sandbox" | "none" | 未来 "macos-seatbelt"/"bwrap"
+    provider_id: str
     def probe(self) -> dict: ...
-    def run(self, command, *, before_dispatch, **hooks) -> dict: ...   # M1.0
-    # M2 target: def wrap(self, argv: list[str], profile: dict) -> list[str]: ...
+    def wrap(self, argv: list[str], profile: dict) -> list[str]: ...
 ```
 
-`AgentRequest` 至少携带：`command`、`prompt`、`model`、`reasoning_effort`、`model_policy`、`model_service`、`model_defaults_source`。M1.0 用现有 `CodingCommand` 作为 `command`，不重写参数语义；`observation`/`cancellation_reason` 通过 `**hooks` 透传。
+### 2.1 请求/结果
 
-> M1 实现说明：M1.0 用扁平 `agent_contract.py` / `agent_codex.py`；M1.1 已收拢为 `agents/` 包，扁平模块保留为兼容 shim。`wrap()` 仍是 M2 目标，M1 用 `run()` 保持行为不变。
+`AgentRequest` 至少包含：
 
-## 2. probe 契约
+- `workspace`、`prompt`、`model`、`model_mode`、`budget`；
+- `scope`（read/write roots、task network、executables）；
+- `session`（mode/id/home）；
+- `transport_options`（仅该 transport 认识）；
+- `observation_root`、`cancellation`。
 
-`probe()` 必须真的执行一次受控探测，不能只判断路径存在：
+`AgentResult` 至少包含：
 
-- 返回 `{"status": "PASS"|"FAIL", "adapter_id", "adapter_version", "executable", "executable_sha256", "evidence"}`；
-- 失败返回稳定原因码 `ADAPTER_PROBE_FAILED`，并带原始 stdout/stderr 摘要（不入敏感信息）；
-- probe 不获得额外权限、不写项目文件、不调用模型；
-- Codex CLI 的 probe 继续检查 `exec --help` 的必需 flag（`--ignore-user-config`、`--strict-config`、`--ephemeral`、`--json`、`--cd`、`stdin`），行为与现状一致。
+- `status`（`PASS` / `FAIL` / `UNKNOWN_SIDE_EFFECT` / `VALIDATION_FAILED`）；
+- `reason_code`、`exit_code`、`final_message`；
+- `events`（归一化）与 `raw_refs`；
+- `usage` / `usage_source`；
+- `session_id`、`adapter_id`、`transport_id`；
+- `workpack_accepted=false`（永远不由 transport 产生 acceptance）。
 
-## 3. 事件归一化
+### 2.2 事件
 
 ```json
 {"seq": 7, "type": "TURN_STARTED|MESSAGE|TOOL_CALL|TOOL_RESULT|USAGE|RETRY|TURN_COMPLETED|TURN_FAILED|UNKNOWN",
- "raw_type": "item.completed", "raw_ref": "stdout.bin#7", "fields": {}}
+ "raw_type": "…", "raw_ref": "stdout.bin#7", "fields": {}}
 ```
 
-规则：
-- 未知事件 → `UNKNOWN` 计数并保留；连续超限或协议错乱 → `ADAPTER_PROTOCOL_ERROR`，失败闭合；
-- 原始字节写入 observation，归一化事件只引用 `raw_ref`；
-- 事件顺序按 `seq`，不按到达时间；
-- 适配器不得把“进程退出 0”直接翻译成 `TURN_COMPLETED`；结束原因由 adapter 的 `classify` 输出，控制器仍以独立检查为准。
+- 原始字节必须保留；
+- 未知事件 `UNKNOWN` 计数，不致命；连续超限/协议错乱 → `TRANSPORT_PROTOCOL_ERROR`；
+- 事件顺序按 `seq`；
+- 模型输出不是验收。
 
-## 4. 失败码（稳定）
+---
 
-| 码 | 含义 |
+## 3. DSH Headless Transport
+
+### 3.1 事实
+
+DSH CLI 位于：
+
+```text
+/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh
+```
+
+`dsh headless --help` 的实际选项：
+
+```text
+dsh --profile headless [--json] [--session-id <id>] [task...]
+  task: 多个词用空格连接；`-` 从 stdin 读取
+  --json: 输出 NDJSON run events
+  --session-id: 采用已持久化 Session；未知 id 报错
+```
+
+### 3.2 调用
+
+```bash
+export DSH_HOME="<scope.dsh_home>"
+"<scope.executable>" --profile headless --json --session-id "<session>" "<prompt>"
+# 或：printf '%s' "$PROMPT" | "$DSH" --profile headless --json -
+```
+
+约束：
+
+- 必须显式传 `DSH_HOME`；不得静默使用 GUI 的隐式状态，除非 Scope 明确 handoff；
+- `--profile desktop` 禁止（Electron 独占）；
+- 不把 `DSH_HOME` 指向未授权目录；会话文件/锁需要写权限；
+- 每次运行一个 `observation_root`，原始 stdout/stderr 落盘。
+
+### 3.3 probe
+
+`probe` 至少执行：
+
+```bash
+"$DSH" --version
+"$DSH" --profile headless --help
+```
+
+返回 `status`、`version`、`headless_help_sha256`、`executable_sha256`、`dsh_home`、`profile_exists`。
+
+- 不调用模型；
+- 不把 `--help` 通过当成模型可用；
+- 认证/模型可用性由首个真实运行验证，失败码 `DSH_AUTH_UNAVAILABLE` / `DSH_MODEL_UNAVAILABLE`。
+
+### 3.4 NDJSON 解析
+
+- `--json` 的 NDJSON 事件 schema 以真实 probe 为准；M0 必须记录一份最小真实样本（不含敏感信息）；
+- 在 schema 冻结前，adapter 只做“保留原始行 + 宽松映射”，未知类型 `UNKNOWN`；
+- 最终消息与 run 结束事件分开记录；
+- 退出码、事件流、最终消息三者不一致时 `DSH_TRANSPORT_INCONSISTENT`，fail-closed。
+
+### 3.5 Session
+
+- `NEW`：adapter 生成/记录 session id（若 CLI 不返回，使用 `--session-id` 预分配或由 DSH 输出事件读取）；
+- `RESUME`：`--session-id` 必须指向同一 `DSH_HOME` 的持久化 session；
+- `HANDOFF`：见 §4；
+- 同一 session 的并发写由 `session.lock` 拒绝；adapter 必须先检查锁并返回 `DSH_SESSION_LOCKED`。
+
+---
+
+## 4. DSH Desktop Transport
+
+### 4.1 事实边界
+
+- DSH Desktop app 版本（本机）`0.2.1-rc.3`；
+- `dsh --profile desktop --help` 返回：
+  `profile "desktop" is managed exclusively by the Electron application`；
+- 不能从 CLI 启动 desktop profile；
+- DSH session 持久化在 `$DSH_HOME/sessions/<workspace>/session-*`，含 `session.lock`；
+- 桌面 app、headless、web 都使用 `DSH_HOME` 下的 session 存储。
+
+### 4.2 支持的 Desktop 模式
+
+#### A. `HANDOFF`（MVP，必须实现）
+
+流程：
+
+1. 人或桌面 app 在 DSH Desktop 中创建/继续一个 session；
+2. Foundry 读取用户给出的 `session_id`（或 `session_projcache` 中的 id），校验：
+   - 同一 `DSH_HOME`；
+   - `session.lock` 未被 GUI 持有；
+   - session 版本可读；
+3. Foundry 调用 `dsh --profile headless --session-id <id> --json` 继续任务；
+4. Readback 显示 `desktop_session_id`、`dsh_home`、`app_version`、`handoff=true`；
+5. 完成后桌面可打开该 session 供人工审阅；GUI 与 headless 不得同时写。
+
+验收：桌面创建 session → Foundry handoff → 产物 → 独立检查 → 接受；全程无 Codex。
+
+#### B. `WEB_API`（P2.1，需 probe）
+
+```bash
+dsh --profile web --host 127.0.0.1 --port 0 --no-open
+```
+
+- 启动本地 UI/API；`--host` 只接受具体本机地址，不接受 wildcard；
+- `/api` 有 browser-trust fence；**具体会话/工作区 endpoint 未验证**；
+- probe 必须记录实际 `/api` 路径、认证方式、请求/响应样例（脱敏）；
+- 未通过 probe → `DSH_WEB_API_UNAVAILABLE`，不写 Attach 实现。
+
+#### C. `ATTACH`（P4+，目标，未验证）
+
+- 直接附着运行中的 Desktop app，不重启、不复制 session；
+- 需要 DSH 官方/稳定的本地 API 或插件入口；
+- 当前无证据，状态 `NOT_VERIFIED`；
+- 不得把 `HANDOFF` 宣传成 `ATTACH`。
+
+### 4.3 打开桌面
+
+`open -a "DeepSeek Harness"` 或 `dsh://` URL 只用于人工审阅；不产生执行权限、不自动确认、不替代独立检查。
+
+---
+
+## 5. DeepSeek CLI Transport
+
+### 5.1 合约
+
+通用 CLI 必须支持：
+
+- `--version`：版本字符串；
+- prompt：stdin 或 argv；
+- JSONL events（至少包含开始/消息/结束/错误；usage 可选）；
+- exit code；
+- 可选 `--session-id` / `--model` / `--workspace`。
+
+### 5.2 现状
+
+- 本机 PATH **没有 `deepseek` CLI**；
+- 不假设存在；adapter probe 失败返回 `ADAPTER_PROBE_FAILED`；
+- DSH headless 可注册为 `deepseek-cli` 的一个实现，但产品字段（`--profile`、`--session-id`）不得泄漏到通用 CLI 合约；
+- 通用 CLI 由声明式 profile（M2.0 的 `DeclarativeProfile`）承载，profile 必须固定字段、占位符、事件映射。
+
+---
+
+## 6. DeepSeek API Transport
+
+### 6.1 目标
+
+API 模式必须能完成实现，而不只是“返回建议”。Foundry 负责工具循环：
+
+```text
+prompt + tools
+  → model tool_calls
+  → Foundry 校验路径/权限
+  → SandboxProvider 执行工具
+  → tool result 回传
+  → … 直到 finish 或 max_turns
+```
+
+### 6.2 工具集（最小）
+
+| 工具 | 输入 | 约束 |
+|---|---|---|
+| `read_file` | path | 只读 roots |
+| `list_dir` | path | 只读 roots |
+| `write_file` | path, content | 写 roots；先展示 diff/内容策略由 Scope 决定 |
+| `run_command` | argv, cwd, timeout | 只经 SandboxProvider；不经 shell |
+| `finish` | summary | 结束；不等于 acceptance |
+
+禁止：任意 URL fetch、直接 SQLite、直接改 Scope/事件、读取凭据。
+
+### 6.3 HTTP 合约
+
+- `base_url` 可配置；默认值以 provider 文档为准，必须显式写入 Scope；
+- `POST /chat/completions`（或 provider 声明的兼容路径）；
+- `stream=true` 时解析 SSE；保留原始响应；
+- `tools`/`tool_calls` 字段按 provider 实际 probe 校准；不假设字段永久稳定；
+- 超时、重试（仅传输层）、`Retry-After`、rate limit；
+- API key 只从环境/钥匙串引用读取，禁止写 Scope/日志/回执；
+- `base_url` host allowlist；禁止重定向到内网/元数据地址。
+
+### 6.4 失败码
+
+`API_AUTH_FAILED`、`API_RATE_LIMITED`、`API_SCHEMA_UNSUPPORTED`、`API_TOOL_LOOP_LIMIT`、`API_USAGE_UNKNOWN`、`API_NETWORK_DENIED`、`API_RESPONSE_TRUNCATED`。
+
+### 6.5 usage
+
+- 有 usage 就记 `REPORTED`；
+- 无 usage 记 `UNKNOWN`，预算降级为尝试次数 + 墙钟；
+- 不得把 UNKNOWN 显示为 0。
+
+---
+
+## 7. SandboxProvider
+
+### 7.1 Providers
+
+| Provider | 平台 | 实现 | 状态 |
+|---|---|---|---|
+| `seatbelt` | macOS | `/usr/bin/sandbox-exec -f <profile>`；deny default，allow read/write roots、进程、必要 model egress | 必须；需在 DSH 外层验证 |
+| `bwrap` | Linux | `bwrap` namespace、bind roots、network none/unshare | 必须 |
+| `none` | 测试 | 仅 fixture；显式 `allow_unsandboxed_agent=true` + `FOUNDRY_TEST_ONLY=1` | 已有；非生产 |
+| `codex-sandbox` | 旧 | 旧 1.2 计划 | 只读兼容 |
+
+### 7.2 嵌套约束
+
+- 实测：在 DSH 会话内执行 `sandbox-exec` 返回 `Operation not permitted`；
+- Host-native 完整构建要求 Foundry 运行在 DSH 外层；
+- 如果只能在 DSH 内运行，必须使用 Desktop-native 桥（DSH 执行工具）或外部 sandbox broker；否则 `NO_GO`；
+- 禁止用 `none` 替代。
+
+### 7.3 网络 profile
+
+```json
+{
+  "agent_egress": "MODEL_ONLY | NONE",
+  "task_network": "NONE | LOOPBACK | REMOTE_SERVICE",
+  "remote_service": {"proxy": "host", "allowed_hosts": ["…"]}
+}
+```
+
+- `MODEL_ONLY` 只放行 DSH/DeepSeek endpoint；
+- `NONE` 不给任务命令网络；
+- `REMOTE_SERVICE` 必须 host-owned proxy + allowlist；未实现前 fail-closed；
+- 网络拒绝必须有 `SANDBOX_NETWORK_DENIED`，不能静默直连。
+
+### 7.4 验收
+
+- 每个 Workpack/验证命令都有 provider；
+- provider probe 失败 → `SANDBOX_UNAVAILABLE`；
+- `none` 出现在生产 Scope → 拒绝；
+- 文件写域/读域/网络/超时都有负例测试。
+
+---
+
+## 8. Plan/Scope 1.3
+
+### 8.1 Plan 1.3
+
+```json
+{
+  "schema_version": "1.3",
+  "workpacks": [{
+    "workpack_id": "IMPLEMENT",
+    "executor": "AGENT",
+    "agent": {
+      "adapter": "dsh-headless",
+      "adapter_version": "1",
+      "session": {"mode": "HANDOFF", "session_id": "session-…"},
+      "model": {"mode": "FIXED", "name": "deepseek-chat"}
+    },
+    "goal": "…",
+    "depends_on": [],
+    "atom_ids": [],
+    "inputs": [], "artifacts": [], "verification": []
+  }]
+}
+```
+
+- `executor: AGENT | LOCAL`；`CODEX` 只在 1.0–1.2 只读；
+- `agent.adapter` 必须在 Scope 声明并可 probe；
+- 无默认 adapter；无 Codex 回退。
+
+### 8.2 Scope 1.3
+
+```json
+{
+  "scope_version": "1.3",
+  "agents": {
+    "dsh": {
+      "adapter": "dsh-headless",
+      "executable": "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh",
+      "dsh_home": "/Users/…/.dsh",
+      "session": {"mode": "HANDOFF", "id": "session-…"},
+      "model": {"mode": "FIXED", "name": "deepseek-chat"}
+    }
+  },
+  "sandbox": {"provider": "seatbelt",
+              "network": {"agent_egress": "MODEL_ONLY", "task_network": "NONE"}},
+  "usage_accounting": "ADAPTER_REPORTED",
+  "workspace_root": "…", "source_read_roots": [], "verification_root": "…",
+  "task_write_roots": {}, "executables": {}, "max_attempts": 3,
+  "max_task_attempts": 2, "command_timeout_seconds": 1800, "expires_at": "…"
+}
+```
+
+- 1.3 **不要求** `codex_executable`；
+- `scope_version` 见 ADR-0001；Plan 1.3 必须显式 1.3；
+- 旧 1.2 Scope 仍读 `codex_executable`/`model_policy`；
+- 1.3 写回只写新形状，不改旧事件。
+
+---
+
+## 9. 无 Codex 验收
+
+### 9.1 定义
+
+“无 Codex 完整构建”指：
+
+1. 新 Plan 无 `CODEX` executor；
+2. 新 Scope 无 `codex_executable` 必填；
+3. 运行路径不启动 `codex` 进程；
+4. 新构建的文档确认、Scope、实现、独立检查、接受/返修/恢复全部完成；
+5. Reviewer 非 Codex；
+6. 目标 Harness 产物不默认 Codex；
+7. 包清单/安装说明无 Codex 依赖。
+
+### 9.2 检查
+
+| 检查 | 方法 |
 |---|---|
-| `ADAPTER_PROBE_FAILED` | 可执行文件/接口/必需 flag 不可用 |
-| `ADAPTER_PROTOCOL_ERROR` | 事件流无法解析或连续未知超限 |
-| `ADAPTER_USAGE_UNKNOWN` | 无 usage，预算降级为尝试次数 + 墙钟 |
-| `ADAPTER_UNSUPPORTED_CAPABILITY` | 声明了宿主不支持的能力（如 handoff/defaults） |
-| `SANDBOX_UNAVAILABLE` | provider 不可用或禁止的 `none` 组合 |
-| `SANDBOX_NETWORK_UNSUPPORTED` | `none` 下声明了网络 |
-| `AGENT_HANDOFF_INVALID` | handoff 字段/模式不合法 |
+| 无 `codex` 进程 | 进程树/argv 断言；`which codex` 为空；运行后扫描 |
+| 无 `CODEX` executor | Plan 1.3 编译 + `grep` |
+| Scope 无 codex | 1.3 Scope 通过；删除 `codex_executable` 后仍 PASS |
+| Reviewer | `rsi_review.py` 不再硬编码；DeepSeek/本地 |
+| 目标 Harness | 规则/Skill/README/指令发现/capability carriers |
+| 包 | `MODULES`/manifest 无 Codex-only 模块；文档无默认 Codex |
+| 旧计划 | 1.0–1.2 只读；不自动迁移 |
 
-旧 `CODEX_*` 原因码保留别名，不要求历史记录改写。
+### 9.3 允许保留的 Codex 名称
 
-## 5. 能力矩阵（M0 空表，M2 填满）
+- `codex-sandbox` provider（旧计划兼容）；
+- `CODEX_*` 原因码别名（旧记录读取）；
+- 文档中的历史/示例；
+- 不得作为新计划默认、回退或验收依赖。
 
-| 能力 | codex-cli | fixture-agent | claude-code | generic-cli |
-|---|---|---|---|---|
-| prompt_transport | stdin | stdin | 待 probe | 声明式 |
-| events | jsonl | jsonl | 待 probe | 声明式 |
-| usage | REPORTED | UNKNOWN（测试可固定） | 待 probe | 声明式 |
-| defaults | READABLE | EXPLICIT_ONLY | 待 probe | EXPLICIT_ONLY |
-| handoff | true | false | 待 probe | 声明式 |
-| sandbox | PROVIDER | NONE（仅测试） | PROVIDER/NATIVE 待定 | 声明式 |
-| 状态 | M1.1 包内实现 | M2 | 未实现 | M2 声明式 |
+---
 
-“待 probe”不是“支持”；没有 probe 证据的能力一律按不支持处理。
+## 10. 测试与 probe 义务
 
-## 6. Scope/Plan 映射
+### M0 必做 probe
 
-- Plan 1.3：`executor ∈ {AGENT, LOCAL}`，`agent.adapter` 必须在 Scope `agents` 中声明并可 probe；
-- Scope 1.3：`agents`、`sandbox`、`model_selection`、`usage_accounting`，版本规则见 ADR-0001；
-- 旧 Plan 1.0–1.2：`CODEX` 映射到 `codex-cli`，`codex_executable` 同时作为 provider executable；不写回旧事件；
-- `sandbox.provider="none"` 只在 ADR-0002 条件下允许。
+1. `dsh --version`、`dsh headless --help`、`dsh web --help`、`dsh --profile desktop --help`（记录独占错误）；
+2. `dsh headless --json` 的最小真实样本（无敏感信息）；
+3. `--session-id` 接管桌面/headless session 的真实样本；
+4. `dsh web --no-open --port 0` + `/api` probe（路径/认证/响应）；
+5. `sandbox-exec` 在 DSH 外层可用性；`bwrap` Linux；嵌套失败复现；
+6. DeepSeek API 的 chat/tool/stream/usage 真实响应；
+7. 目标 Harness 的指令发现/能力包/carrier 现状。
 
-## 7. 测试义务（M1/M2 退出证据）
+所有 probe 只读；不把 probe 当验收。
 
-1. golden fixture：当前 Codex 事件流（从现有测试导出）归一化后逐条一致；原始字节不变。
-2. 负向：可执行缺失、probe 失败、未知事件超限、无 usage、协议错误、沙箱不可用、`none`+network 组合。
-3. 行为不变：M1.1 下 1.2 计划端到端结果与改造前一致；901 门禁全绿。
-4. 无模型 E2E：fixture agent 写出声明产物，`advance-build` 完成实现→独立检查→接受；进程树中无 `codex`（除显式 `codex-sandbox`）。
-5. Readback 必须显示 `adapter_id`、`adapter_version`、`sandbox_provider`、`usage_source`；`UNKNOWN` 不能显示成 0。
+### 测试矩阵
 
-## 8. 版本与兼容
+- unit：transport/profile/sandbox/协议；
+- fixture：无模型、无网络、无 Codex；
+- real：DSH headless、desktop handoff、API 各一条；
+- negative：缺 executable、auth 失败、session 锁、未知事件、网络拒绝、无 provider、`none` 生产；
+- compat：1.2 旧计划只读、1.3 新计划；
+- package：无 Codex 依赖、文档/ Skill/carrier 一致。
 
-- 本契约版本 `1`；字段新增走 minor，删除/改义走 major；
-- 声明式 profile 的 `schema_version` 独立于本契约；
-- adapter 版本是契约实现版本，不是 Codex/Claude 的产品版本；
-- 任何“支持任意 agent”的声明，必须有至少一个非 Codex 的真实 probe + 一条无模型 E2E 作为证据。
+---
 
-## 9. M2.0 declarative profile（已实现）
+## 11. 未决/不假设
 
-`agents/profile.py` 提供 `DeclarativeProfile` / `DeclarativeAdapter`：
+| 项 | 状态 | 处理 |
+|---|---|---|
+| DSH Desktop attach API | `NOT_VERIFIED` | P0/P2.1 probe；不实现前标 NOT_VERIFIED |
+| DSH headless NDJSON schema | 未冻结 | M0 真实样本后冻结 |
+| DSH `--session-id` 并发/锁行为 | 部分（有 session.lock） | 必须实测；失败 `DSH_SESSION_LOCKED` |
+| `sandbox-exec` 在 DSH 外层 | 待验证 | Host-native 前置；失败则 `NO_GO` |
+| `bwrap` macOS | 不存在 | 仅 Linux |
+| DeepSeek API 工具 schema | 待 probe | 不假设永久稳定 |
+| 无 Codex 的 REMOTE_SERVICE | 未实现 | 先 `NONE`/`LOOPBACK`，fail-closed |
+| 目标 Harness carrier | 未实现 | P4/P5 |
 
-- 严格 JSON profile：固定字段、capabilities、probe argv/regex、invocation argv/stdin、event_map、exit_map、`unknown_event=RETAIN`；
-- 只允许 `{executable}`、`{workspace}`、`{prompt_file}`、`{prompt}` 占位符，不经 shell；
-- `probe()` 在受控子进程里执行 argv 并校验 regex；`render()` 只渲染 argv，不启动模型；
-- `map_event()` / `classify_exit()` 做纯映射，未知事件为 `UNKNOWN`；
-- M2.1a 增加 `NoneSandboxProvider`（仅测试、要求 `allow_unsandboxed_agent=true` 且 network=NONE）与 fixture dispatch；没有显式 provider 时 `run()` 仍抛 `NotImplementedError`。controller E2E 是 M2.1b，不得把 M2.1a 说成“第二个适配器已可用于生产”。
+---
+
+## 12. 版本与兼容
+
+- 本规格版本 `2`；transport/capability 字段新增 minor，删除/改义 major；
+- Plan/Scope 1.3 只对新计划生效；
+- 旧 1.0–1.2 不迁移、不写回；
+- `CODEX_*` 仅别名；
+- 任何“支持 DeepSeek”的声明必须有真实 transport probe + 一条无 Codex E2E 作为证据。

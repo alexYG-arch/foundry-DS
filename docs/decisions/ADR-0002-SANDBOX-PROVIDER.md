@@ -1,6 +1,10 @@
+> **2026-10-26 更正**：本 ADR 的“生产仍需 codex-sandbox”只适用于旧 1.2 兼容路径。新路线（`Harness_Foundry_升级方案_v2_DeepSeek与无Codex.md`）要求真实 macOS seatbelt / Linux bwrap；`none` 仅测试；不能再用“Codex sandbox 仍是依赖”解释无 Codex 构建。
+>
+> 本 ADR 的 M2.1a `NoneSandboxProvider` 仍有效，但只作 fixture；不是生产替代。
+
 # ADR-0002：沙箱提供者与“去 Codex”的边界
 
-- 状态：`ACCEPTED_FOR_M0`（决策已定，代码未实现）
+- 状态：`SUPERSEDED_BY_PLAN_V2`（本 ADR 允许 Codex sandbox 继续作为依赖；新方案要求无 Codex 的 seatbelt/bwrap）
 - 日期：2026-10-26
 - 关联：`docs/decisions/ADR-0001-SCOPE-VERSIONING.md`、`Harness_Foundry_升级方案_多智能体适配与RSI自升级.md`、`Harness_Foundry_升级方案_补充_载体解绑与设计RSI.md`
 - 决策者：维护者（本轮调整）
