@@ -17,7 +17,7 @@ SCOPE_FIELDS = {
     "source_read_roots", "verification_root", "task_write_roots", "executables",
     "max_attempts", "max_task_attempts", "command_timeout_seconds", "expires_at",
 }
-AGENT_FIELDS = {"adapter", "executable", "dsh_home", "session", "model"}
+AGENT_FIELDS = {"adapter", "executable", "dsh_home", "session", "model", "base_url", "key_file"}
 SANDBOX_FIELDS = {"provider", "network"}
 PROVIDERS = {"seatbelt", "bwrap", "none"}
 
@@ -83,8 +83,18 @@ def validate_scope_13(plan, scope, *, test_only=False):
         _require(isinstance(name, str) and isinstance(definition, dict), "agent definitions must be objects")
         _require(set(definition) <= AGENT_FIELDS, "agent definition has unsupported fields")
         _require(definition.get("adapter") in plan_adapters, "agent adapter is not declared by the plan")
-        _require(isinstance(definition.get("executable"), str), "agent executable is required")
-        _absolute_file(definition["executable"], f"agent {name} executable")
+        adapter = definition.get("adapter")
+        if adapter == "deepseek-api":
+            _require(isinstance(definition.get("base_url"), str) and definition["base_url"].strip(),
+                     "deepseek-api needs base_url")
+            if "key_file" in definition:
+                _absolute_file(definition["key_file"], f"agent {name} key_file")
+        elif adapter in {"dsh-headless", "fixture-agent"}:
+            _require(isinstance(definition.get("executable"), str), "agent executable is required")
+            _absolute_file(definition["executable"], f"agent {name} executable")
+        else:
+            _require(isinstance(definition.get("executable"), str), "agent executable is required")
+            _absolute_file(definition["executable"], f"agent {name} executable")
         if "session" in definition:
             _require(isinstance(definition["session"], dict), "agent session must be an object")
         if "model" in definition:

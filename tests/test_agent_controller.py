@@ -180,6 +180,17 @@ class AgentControllerTests(unittest.TestCase):
         self.assertEqual(result["status"], "HELD_ACCEPTED_ARTIFACT_DRIFT", result)
         self.assertEqual(adapter.calls, 0)
 
+    def test_controller_factory_builds_api_adapter_without_codex(self):
+        key = self.root / "api.key"
+        key.write_text("fake-api-key\n")
+        key.chmod(0o600)
+        definition = {"adapter": "deepseek-api", "base_url": "http://127.0.0.1:1/v1",
+                      "key_file": str(key), "model": {"name": "deepseek-chat"}}
+        adapter = AgentBuildController(self.store, self.program)._default_adapter(
+            {"agent": {"adapter": "deepseek-api"}}, {"agents": {"api": definition}})
+        self.assertEqual(adapter.capabilities.adapter_id, "deepseek-api")
+        self.assertEqual(adapter.capabilities.sandbox, "PROVIDER")
+
     def test_controller_requires_approval(self):
         other = self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_PREPARED",
             "payload": {"scope": self.scope, "plan": self.plan}}], expected_revision=2,

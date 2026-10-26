@@ -17,6 +17,7 @@ from uuid import uuid4
 
 from .base import AgentRequest
 from .dsh import DshHeadlessAdapter
+from .api import DeepseekApiAdapter
 from .sandbox_seatbelt import SeatbeltSandboxProvider
 from .sandbox_bwrap import BubblewrapSandboxProvider
 from .scope13 import validate_scope_13
@@ -46,6 +47,11 @@ class AgentBuildController:
         if definition["adapter"] == "dsh-headless":
             return DshHeadlessAdapter(definition["executable"], definition.get("dsh_home", Path.home() / ".dsh"),
                                       key_file=definition.get("key_file"))
+        if definition["adapter"] == "deepseek-api":
+            model = definition.get("model", {}).get("name", "deepseek-chat")
+            return DeepseekApiAdapter(base_url=definition["base_url"], model=model,
+                                      key_file=definition.get("key_file"), provider=self.provider,
+                                      allow_insecure_localhost=definition["base_url"].startswith("http://127.0.0.1"))
         raise ValueError(f"unsupported agent adapter: {definition['adapter']}")
 
     @staticmethod
@@ -109,6 +115,7 @@ class AgentBuildController:
                     "accepted_workpacks": [],
                     "next_action": "RECONCILE_EFFECTS", "execution_started": False,
                     "harness_e2e_verified": False}
+        agent_sandbox = "UNKNOWN"
         accepted = sorted({row["payload"]["workpack_id"] for row in finished.values()
                            if row["payload"].get("status") == "ACCEPTED"
                            and row["payload"].get("workpack_id") in task_ids})
@@ -130,6 +137,7 @@ class AgentBuildController:
                 raise ValueError("experimental controller only dispatches AGENT workpacks")
             adapter = (self.adapter_factory(task, scope) if self.adapter_factory
                        else self._default_adapter(task, scope))
+            agent_sandbox = getattr(getattr(adapter, "capabilities", None), "sandbox", "UNKNOWN")
             task_attempts = 0
             feedback = None
             while True:
@@ -216,6 +224,6 @@ class AgentBuildController:
                             "harness_e2e_verified": False}
         return {"status": "PLAN_CHECKS_ACCEPTED", "accepted_workpacks": accepted,
                 "attempts_used": used, "agent_controller": "EXPERIMENTAL_1_3",
-                "agent_sandbox_enforcement": "NATIVE",
+                "agent_sandbox_enforcement": agent_sandbox,
                 "task_sandbox_provider": getattr(self.provider, "provider_id", "UNKNOWN"),
                 "harness_e2e_verified": False}
