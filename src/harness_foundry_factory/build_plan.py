@@ -149,6 +149,8 @@ def validate_build_plan(requirement_ir: Mapping[str, Any], plan: Mapping[str, An
             allowed_workpack_fields |= set(workpack) & {"environment", "effects"}
         if version == "1.3" and "agent" in workpack:
             allowed_workpack_fields.add("agent")
+        if version == "1.3" and "verifier" in workpack:
+            allowed_workpack_fields.add("verifier")
         _fields(workpack, allowed_workpack_fields, f"workpack {workpack_id}")
         if "environment" in workpack:
             env = workpack["environment"]
@@ -191,6 +193,23 @@ def validate_build_plan(requirement_ir: Mapping[str, Any], plan: Mapping[str, An
         elif "agent" in workpack:
             _require(version == "1.3" and workpack["executor"] == "AGENT", "BUILD_PLAN_AGENT_INVALID",
                      "agent is only valid on a 1.3 AGENT workpack")
+        if "verifier" in workpack:
+            _require(version == "1.3" and workpack["executor"] == "AGENT",
+                     "BUILD_PLAN_VERIFIER_INVALID", "verifier is only valid on a 1.3 AGENT workpack")
+            verifier = workpack["verifier"]
+            _require(isinstance(verifier, dict), "BUILD_PLAN_VERIFIER_INVALID", "verifier must be an object")
+            required = {"verifier_id", "owner", "code_ref", "code_sha256", "expected_ref", "expected_sha256"}
+            _require(required <= set(verifier) <= required | {"input_policy"},
+                     "BUILD_PLAN_VERIFIER_INVALID", "verifier has missing or unsupported fields")
+            for key in ("verifier_id", "owner", "code_ref", "expected_ref"):
+                _require(isinstance(verifier[key], str) and verifier[key].strip(),
+                         "BUILD_PLAN_VERIFIER_INVALID", f"verifier.{key} must be nonempty")
+            for key in ("code_sha256", "expected_sha256"):
+                _require(isinstance(verifier[key], str) and len(verifier[key]) == 64
+                         and all(c in "0123456789abcdef" for c in verifier[key]),
+                         "BUILD_PLAN_VERIFIER_INVALID", f"verifier.{key} must be SHA-256")
+            _require(verifier.get("input_policy", "CAS_ONLY") == "CAS_ONLY",
+                     "BUILD_PLAN_VERIFIER_INVALID", "verifier input_policy must be CAS_ONLY")
         if "local_argv" in workpack:
             _require(workpack["executor"] == "LOCAL" and isinstance(workpack["local_argv"], list)
                      and bool(workpack["local_argv"]), "BUILD_PLAN_LOCAL_COMMAND_INVALID",

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +23,8 @@ from .api import DeepseekApiAdapter
 from .sandbox_seatbelt import SeatbeltSandboxProvider
 from .sandbox_bwrap import BubblewrapSandboxProvider
 from .scope13 import validate_scope_13
+from .artifacts import ingest as ingest_artifacts
+from .verifier import VerifierContract, VerifierContractError
 
 
 def _event(events, event_id, kind):
@@ -122,6 +126,12 @@ class AgentBuildController:
                            if row["payload"].get("status") == "ACCEPTED"
                            and row["payload"].get("workpack_id") in task_ids})
         workspace = Path(scope["workspace_root"]).resolve()
+        staging_root = Path(scope["staging_root"]).resolve() if "staging_root" in scope else None
+        cas_root = Path(scope["cas_root"]).resolve() if "cas_root" in scope else None
+        use_cas = staging_root is not None and cas_root is not None
+        if use_cas:
+            staging_root.mkdir(parents=True, exist_ok=True)
+            cas_root.mkdir(parents=True, exist_ok=True)
         for row in finished.values():
             if row["payload"].get("status") != "ACCEPTED":
                 continue
@@ -140,6 +150,17 @@ class AgentBuildController:
             adapter = (self.adapter_factory(task, scope) if self.adapter_factory
                        else self._default_adapter(task, scope))
             agent_sandbox = getattr(getattr(adapter, "capabilities", None), "sandbox", "UNKNOWN")
+            verifier_identity = None
+            if "verifier" in task:
+                try:
+                    contract = VerifierContract.from_dict(task["verifier"])
+                    verifier_identity = contract.verify_files(
+                        Path(scope["verification_root"]) / contract.code_ref,
+                        Path(scope["verification_root"]) / contract.expected_ref)
+                except (OSError, ValueError, VerifierContractError) as exc:
+                    return {"status": "HELD_VERIFIER_IDENTITY", "workpack_id": task["workpack_id"],
+                            "diagnostic": str(exc), "execution_started": False,
+                            "harness_e2e_verified": False}
             task_attempts = 0
             feedback = None
             while True:
@@ -159,38 +180,60 @@ class AgentBuildController:
                            "job_id": task["job_id"], "prepared_event_id": prepared_id,
                            "proposal_event_id": prepared.get("proposal_event_id"),
                            "budget_workpack_ids": owners, "executor": "AGENT",
-                           "adapter": task["agent"]["adapter"]}
+                           "adapter": task["agent"]["adapter"],
+                       **({"verifier_identity": verifier_identity} if verifier_identity is not None else {})}
                 self.store.append_batch(self.program_id, [{"event_type": "BUILD_ATTEMPT_STARTED",
                     "payload": started}], expected_revision=len(events),
                     idempotency_key=attempt_id + ":start",
                     created_at=datetime.now(timezone.utc).isoformat(), require_new=True)
                 events = self.store.list_events(self.program_id)
+                attempt_workspace = (staging_root / attempt_id) if use_cas else workspace
+                if use_cas:
+                    attempt_workspace.mkdir(parents=True, exist_ok=True)
                 command = SimpleNamespace(scope=SimpleNamespace(
-                    cwd=workspace, read_roots=(workspace, *[Path(root) for root in scope["source_read_roots"]]),
-                    write_roots=tuple(Path(root) for root in scope["task_write_roots"][task["workpack_id"]]),
+                    cwd=attempt_workspace, read_roots=(attempt_workspace, *[Path(root) for root in scope["source_read_roots"]]),
+                    write_roots=(attempt_workspace,),
                     timeout_seconds=scope["command_timeout_seconds"], environment={}))
                 result = adapter.run(AgentRequest(command=command, prompt=self._prompt(task, feedback)),
                                      before_dispatch=lambda: None)
                 artifacts = {}
                 artifact_error = None
+                cas_manifest = None
+                verification_root = attempt_workspace
                 try:
-                    for item in task["artifacts"]:
-                        path = (workspace / item["path"]).resolve()
-                        if not path.is_file():
-                            raise ValueError(f"declared artifact missing: {item['path']}")
-                        artifacts[item["artifact_id"]] = {
-                            "path": item["path"], "size": path.stat().st_size,
-                            "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+                    if use_cas:
+                        cas = ingest_artifacts(attempt_workspace, cas_root, task["artifacts"], attempt_id=attempt_id)
+                        cas_manifest = cas["manifest"]
+                        artifacts = {row["artifact_id"]: {"path": row["path"], "size": row["size"],
+                                                          "sha256": row["sha256"], "cas_ref": row["cas_ref"]}
+                                     for row in cas_manifest["entries"]}
+                        verification_root = Path(tempfile.mkdtemp(prefix="foundry-cas-view-"))
+                        for row in cas_manifest["entries"]:
+                            source = cas_root / row["sha256"][:2] / row["sha256"]
+                            target = verification_root / row["path"]
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(source, target)
+                    else:
+                        for item in task["artifacts"]:
+                            path = (workspace / item["path"]).resolve()
+                            if not path.is_file():
+                                raise ValueError(f"declared artifact missing: {item['path']}")
+                            artifacts[item["artifact_id"]] = {
+                                "path": item["path"], "size": path.stat().st_size,
+                                "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
                 except (OSError, ValueError) as exc:
                     artifact_error = str(exc)
-                verification = [] if artifact_error else self._verify(task, scope, workspace)
+                verification = [] if artifact_error else self._verify(task, scope, verification_root)
+                if use_cas:
+                    shutil.rmtree(verification_root, ignore_errors=True)
                 passed = (result.get("status") == "PASS" and artifact_error is None
                           and bool(verification) and all(row["result"].get("status") == "PASS" for row in verification))
                 payload = {**started, "status": "ACCEPTED" if passed else "REJECTED",
                            "artifacts": artifacts, "artifact_error": artifact_error,
                            "verification": verification,
                            "effects": {"status": "NOT_OBSERVED", "external_effects_verified": False},
-                           "result": result, "workpack_accepted": passed,
+                           "result": result, "workpack_accepted": passed, "cas_manifest": cas_manifest,
+                           **({"verifier_identity": verifier_identity} if verifier_identity is not None else {}),
                            "agent_sandbox_enforcement": getattr(getattr(adapter, "capabilities", None), "sandbox", "UNKNOWN"),
                            "task_sandbox_provider": getattr(self.provider, "provider_id", "UNKNOWN")}
                 self.store.append_batch(self.program_id, [{"event_type": "BUILD_ATTEMPT_FINISHED",

@@ -35,6 +35,17 @@ class FlakyAdapter:
                 "workload_started": True, "workpack_accepted": False}
 
 
+class StagingAdapter:
+    def __init__(self):
+        self.calls = 0
+    def run(self, request, *, before_dispatch, **hooks):
+        self.calls += 1
+        scope = request.command.scope
+        (Path(scope.cwd) / "proof.txt").write_text("CAS_CONTROLLER_OK")
+        return {"status": "PASS", "adapter_id": "staging", "workload_started": True,
+                "workpack_accepted": False}
+
+
 class AgentControllerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -190,6 +201,72 @@ class AgentControllerTests(unittest.TestCase):
             {"agent": {"adapter": "deepseek-api"}}, {"agents": {"api": definition}})
         self.assertEqual(adapter.capabilities.adapter_id, "deepseek-api")
         self.assertEqual(adapter.capabilities.sandbox, "PROVIDER")
+
+    def test_controller_cas_ingests_staging_and_accepts_hash(self):
+        import shutil as _shutil
+        staging = self.root / "staging"; staging.mkdir()
+        cas = self.root / "cas"; cas.mkdir()
+        scope = json.loads(json.dumps(self.scope))
+        scope.update(staging_root=str(staging), cas_root=str(cas))
+        now = datetime.now(timezone.utc).isoformat()
+        revision = len(self.store.list_events(self.program))
+        prepared = self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_PREPARED",
+            "payload": {"scope": scope, "plan": self.plan}}], expected_revision=revision,
+            idempotency_key="cas-prepare", created_at=now, require_new=True)[0]
+        self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_APPROVED",
+            "payload": {"prepared_event_id": prepared["event_id"]}}], expected_revision=revision + 1,
+            idempotency_key="cas-approve", created_at=now, require_new=True)
+        adapter = StagingAdapter()
+        result = AgentBuildController(self.store, self.program,
+                                      adapter_factory=lambda task, scope: adapter).advance(prepared["event_id"])
+        self.assertEqual(result["status"], "PLAN_CHECKS_ACCEPTED", result)
+        self.assertEqual(adapter.calls, 1)
+        finished = [row for row in self.store.list_events(self.program)
+                    if row["event_type"] == "BUILD_ATTEMPT_FINISHED" and row["payload"].get("attempt_id", "").startswith("AGENT-")][-1]
+        payload = finished["payload"]
+        self.assertEqual(payload["artifacts"]["PROOF"]["sha256"], __import__("hashlib").sha256(b"CAS_CONTROLLER_OK").hexdigest())
+        self.assertIsNotNone(payload["cas_manifest"])
+        target = cas / payload["artifacts"]["PROOF"]["sha256"][:2] / payload["artifacts"]["PROOF"]["sha256"]
+        self.assertTrue(target.is_file())
+        self.assertEqual(target.read_text(), "CAS_CONTROLLER_OK")
+
+    def test_controller_checks_independent_verifier_hash_before_dispatch(self):
+        import hashlib, json as _json
+        code = self.verifier / "check.py"; expected = self.verifier / "expected.json"
+        code.write_text("print('ok')\n")
+        expected.write_text('{"ok": true}\n')
+        plan = _json.loads(_json.dumps(self.plan))
+        task = plan["workpacks"][0]
+        task["verifier"] = {"verifier_id": "V1", "owner": "verifier-owner",
+            "code_ref": "check.py", "code_sha256": hashlib.sha256(code.read_bytes()).hexdigest(),
+            "expected_ref": "expected.json", "expected_sha256": hashlib.sha256(expected.read_bytes()).hexdigest(),
+            "input_policy": "CAS_ONLY"}
+        now = datetime.now(timezone.utc).isoformat()
+        revision = len(self.store.list_events(self.program))
+        prepared = self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_PREPARED",
+            "payload": {"scope": self.scope, "plan": plan}}], expected_revision=revision,
+            idempotency_key="verify-prepare", created_at=now, require_new=True)[0]
+        self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_APPROVED",
+            "payload": {"prepared_event_id": prepared["event_id"]}}], expected_revision=revision + 1,
+            idempotency_key="verify-approve", created_at=now, require_new=True)
+        adapter = FlakyAdapter(self.workspace)
+        result = AgentBuildController(self.store, self.program,
+                                      adapter_factory=lambda task, scope: adapter).advance(prepared["event_id"])
+        self.assertEqual(result["status"], "PLAN_CHECKS_ACCEPTED", result)
+        finished = [row for row in self.store.list_events(self.program)
+                    if row["event_type"] == "BUILD_ATTEMPT_FINISHED"][-1]["payload"]
+        self.assertTrue(finished["verifier_identity"]["independent"])
+        expected.write_text("tampered")
+        revision = len(self.store.list_events(self.program))
+        prepared2 = self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_PREPARED",
+            "payload": {"scope": self.scope, "plan": plan}}], expected_revision=revision,
+            idempotency_key="verify-prepare-2", created_at=now, require_new=True)[0]
+        self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_APPROVED",
+            "payload": {"prepared_event_id": prepared2["event_id"]}}], expected_revision=revision + 1,
+            idempotency_key="verify-approve-2", created_at=now, require_new=True)
+        result = AgentBuildController(self.store, self.program,
+                                      adapter_factory=lambda task, scope: FlakyAdapter(self.workspace)).advance(prepared2["event_id"])
+        self.assertEqual(result["status"], "HELD_VERIFIER_IDENTITY", result)
 
     def test_controller_requires_approval(self):
         other = self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_PREPARED",

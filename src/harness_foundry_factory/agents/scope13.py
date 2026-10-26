@@ -17,6 +17,7 @@ SCOPE_FIELDS = {
     "source_read_roots", "verification_root", "task_write_roots", "executables",
     "max_attempts", "max_task_attempts", "command_timeout_seconds", "expires_at",
 }
+OPTIONAL_FIELDS = {"staging_root", "cas_root"}
 AGENT_FIELDS = {"adapter", "executable", "dsh_home", "session", "model", "base_url", "key_file"}
 SANDBOX_FIELDS = {"provider", "network"}
 PROVIDERS = {"seatbelt", "bwrap", "none"}
@@ -50,10 +51,18 @@ def validate_scope_13(plan, scope, *, test_only=False):
     """
     _require(isinstance(plan, dict) and plan.get("schema_version") == "1.3",
              "agent scope requires plan 1.3")
-    _require(isinstance(scope, dict) and set(scope) == SCOPE_FIELDS,
+    _require(isinstance(scope, dict) and SCOPE_FIELDS <= set(scope) <= SCOPE_FIELDS | OPTIONAL_FIELDS,
              "scope 1.3 has missing or unsupported fields")
     _require(scope["scope_version"] == "1.3", "scope_version must be 1.3")
     _require("codex_executable" not in scope, "scope 1.3 must not require codex_executable")
+    for name in ("staging_root", "cas_root"):
+        if name in scope:
+            _require(isinstance(scope[name], str) and Path(scope[name]).is_absolute(),
+                     f"{name} must be an absolute path")
+    if "staging_root" in scope and "cas_root" in scope:
+        staging, cas = Path(scope["staging_root"]).resolve(), Path(scope["cas_root"]).resolve()
+        _require(not staging.is_relative_to(cas) and not cas.is_relative_to(staging),
+                 "staging and CAS must not contain each other")
     workspace = Path(scope["workspace_root"])
     _require(workspace.is_absolute() and workspace.is_dir(), "workspace_root must be an existing directory")
     verifier = Path(scope["verification_root"])
