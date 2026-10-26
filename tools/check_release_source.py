@@ -77,6 +77,7 @@ REQUIRED_MODULES = (
     "test_declarative_dispatch",
     "test_check_ios_env",
     "test_sandbox_seatbelt",
+    "test_sandbox_trusted",
     "test_agent_scope13",
     "test_dsh_adapter",
     "test_api_adapter",
@@ -88,6 +89,7 @@ REQUIRED_MODULES = (
     "test_host_gateway",
     "test_artifacts_cas",
     "test_verifier_contract",
+    "test_execution_limits",
     "test_check_design_record",
 )
 

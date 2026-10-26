@@ -213,6 +213,7 @@ class AgentBuildController:
                             target = verification_root / row["path"]
                             target.parent.mkdir(parents=True, exist_ok=True)
                             shutil.copy2(source, target)
+                            target.chmod(0o444)
                     else:
                         for item in task["artifacts"]:
                             path = (workspace / item["path"]).resolve()

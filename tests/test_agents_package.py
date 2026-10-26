@@ -51,7 +51,7 @@ class AgentsPackageTests(unittest.TestCase):
     def test_release_package_contains_agents_package(self):
         result = packager.package(None)
         files = set(result["files"])
-        for relative in ("agents/__init__.py", "agents/base.py", "agents/codex.py", "agents/profile.py", "agents/sandbox_none.py", "agents/sandbox_seatbelt.py", "agents/sandbox_bwrap.py", "agents/scope13.py", "agents/dsh.py", "agents/api.py", "agents/agent_controller.py", "agents/egress_proxy.py", "agents/host_gateway.py", "agents/artifacts.py", "agents/verifier.py"):
+        for relative in ("agents/__init__.py", "agents/base.py", "agents/codex.py", "agents/profile.py", "agents/sandbox_none.py", "agents/sandbox_seatbelt.py", "agents/sandbox_bwrap.py", "agents/sandbox_trusted.py", "agents/scope13.py", "agents/dsh.py", "agents/api.py", "agents/agent_controller.py", "agents/egress_proxy.py", "agents/host_gateway.py", "agents/artifacts.py", "agents/verifier.py", "agents/limits.py"):
             self.assertIn(f"src/harness_foundry_factory/{relative}", files)
         self.assertIn("src/harness_foundry_factory/agent_contract.py", files)
         self.assertIn("src/harness_foundry_factory/agent_codex.py", files)
