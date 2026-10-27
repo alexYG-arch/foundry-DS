@@ -646,6 +646,10 @@ class BuildController:
         return self.store.append_batch(self.program_id, [{"event_type": kind, "payload": payload}],
             expected_revision=revision, idempotency_key=key, created_at=self.clock().isoformat(), require_new=True)[0]
 
+    def control_view(self, prepared_id):
+        from .control_view import build_control_view
+        return build_control_view(self.store, self.program_id, prepared_id, now=self.clock())
+
     def control_snapshot(self, prepared_id):
         """Lightweight control facts for monitoring; no source/proposal bodies."""
         auth = self.store.list_events_by_types(self.program_id, (

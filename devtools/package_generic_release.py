@@ -22,7 +22,7 @@ from harness_foundry_factory.portable import LOCAL_IDENTITY_RE, LOCAL_MACHINE_BI
 MODULES = (
     "rsi_adoption", "rsi_cases", "rsi_review", "rsi_tdd", "rsi_wiki", "rsi_delivery", "rsi_handoff",
     "identity", "python_startup", "build_capabilities", "build_observation", "build_types", "build_cli", "build_display", "build_authoring", "build_plan", "build_review",
-    "build_runtime", "build_reconciliation", "build_reassessment", "build_correction", "build_preview", "build_check_protocol", "build_rebind", "build_resource_lifecycle", "build_state", "build_artifacts", "build_effects", "build_replan", "build_repair", "build_entrypoint", "source_intake", "acceptance_contract", "revision_store", "revision_store_dedup", "design_record",
+    "build_runtime", "build_reconciliation", "build_reassessment", "build_correction", "build_preview", "build_check_protocol", "build_rebind", "build_resource_lifecycle", "build_state", "build_artifacts", "build_effects", "build_replan", "build_repair", "build_entrypoint", "source_intake", "acceptance_contract", "revision_store", "revision_store_dedup", "control_view", "design_record",
     "agent_contract", "agent_codex", "local_process", "coding_process", "coding_defaults", "coding_events", "process_observation", "verification_resources", "verification_snapshot", "resource_observation", "resource_network", "resource_credentials", "legacy_history", "test_execution",
 )
 PACKAGE_MODULES = {"agents": ("__init__", "base", "codex", "profile", "sandbox_none", "sandbox_seatbelt", "sandbox_bwrap", "sandbox_trusted", "scope13", "dsh", "api", "agent_controller", "egress_proxy", "host_gateway", "artifacts", "verifier", "verifier_runner", "limits")}
