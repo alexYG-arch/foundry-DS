@@ -206,7 +206,7 @@ def collect_files(source_root=ROOT):
                     "tools/hffactory.py": "resources/generic_release/hffactory.py",
                     "src/harness_foundry_factory/__init__.py": "resources/generic_release/__init__.py",
                     ".agents/skills/harness-foundry-build/SKILL.md": "resources/generic_release/SKILL.md"})
-    for name in ("import_rsi_case", "rsi_review", "report_rsi_tdd", "rsi_wiki", "prepare_rsi_delivery", "report_rsi_adoption"):
+    for name in ("import_rsi_case", "rsi_review", "report_rsi_tdd", "rsi_wiki", "prepare_rsi_delivery", "report_rsi_adoption", "render_current_view"):
         sources[f"tools/{name}.py"] = f"tools/{name}.py"
     files = {}
     for destination, relative in sources.items():
