@@ -130,7 +130,20 @@ def check_suite(suite: unittest.TestSuite, *, stream=None) -> dict:
     }
 
 
-def source_checks() -> dict:
+def _release_receipt(path):
+    import hashlib
+    import subprocess
+    value = json.loads(Path(path).read_text(encoding="utf-8"))
+    digest = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, capture_output=True, check=False).stdout.strip()
+    valid = (value.get("schema_version") == "RELEASE_RECEIPT_V1"
+             and value.get("release_accepted") is True
+             and value.get("commit") == head
+             and not value.get("findings"))
+    return value, digest, head, valid
+
+
+def source_checks(receipt=None) -> dict:
     sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(ROOT / "tests"))
     sys.path.insert(0, str(ROOT / "src"))
@@ -157,6 +170,14 @@ def source_checks() -> dict:
         skill_result = {"status": "FAIL", "error": "Skill checker did not emit JSON"}
     skill_ok = isinstance(skill_result, dict) and skill_result.get("status") == "PASS" and skill.returncode == 0
     passed = tests["status"] == "PASS" and not missing and not empty and not loader.errors and skill_ok
+    receipt_value = None
+    if receipt is not None:
+        try:
+            receipt_value, receipt_digest, head, receipt_valid = _release_receipt(receipt)
+        except (OSError, ValueError) as exc:
+            receipt_value, receipt_digest, head, receipt_valid = {"error": str(exc)}, None, None, False
+        if not receipt_valid:
+            passed = False
     return {
         "schema_version": "1.0",
         "status": "SOURCE_CHECKS_PASS" if passed else "SOURCE_CHECKS_FAIL",
@@ -168,9 +189,11 @@ def source_checks() -> dict:
         "load_errors": loader.errors,
         "tests": tests,
         "skill": skill_result,
-        "release_accepted": False,
-        "harness_e2e_verified": False,
-        "not_run": [
+        "release_accepted": bool(receipt_value and receipt_valid) if receipt is not None else False,
+        "harness_e2e_verified": bool(receipt_value and receipt_valid) if receipt is not None else False,
+        "release_receipt": ({"path": str(receipt), "sha256": receipt_digest,
+                             "commit": head, "valid": receipt_valid} if receipt is not None else None),
+        "not_run": [] if receipt_value and receipt_valid else [
             "FULL_COMPATIBILITY_REGRESSION", "PHYSICAL_SIBLING_SPEC_CHECK",
             "NATIVE_CODEX_ACCEPTANCE", "SAME_PACKAGE_TWO_CASES",
             "CLEAN_COMMITTED_RELEASE_BUILD", "PUBLICATION",
@@ -181,11 +204,12 @@ def source_checks() -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", type=Path, help="Write JSON to a new diagnostic file; never overwrite.")
+    parser.add_argument("--receipt", type=Path, help="Validate a RELEASE_RECEIPT_V1 and bind release status to it")
     args = parser.parse_args()
     if args.report and args.report.exists():
         parser.error("--report must name a new file")
     try:
-        report = source_checks()
+        report = source_checks(receipt=args.receipt)
     except Exception as exc:
         report = {"status": "SOURCE_CHECKS_FAIL", "error": f"{type(exc).__name__}: {exc}",
                   "release_accepted": False, "harness_e2e_verified": False}
