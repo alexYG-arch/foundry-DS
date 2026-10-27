@@ -11862,43 +11862,37 @@ def _validator_json_template_findings(
     relative_path: str,
     pointer: tuple[str, ...] = (),
 ) -> list[dict[str, Any]]:
-    if _validator_pointer_is_opaque_frozen_history(relative_path, pointer):
-        return []
-    if isinstance(value, Mapping):
-        findings: list[dict[str, Any]] = []
-        for key, item in value.items():
-            findings.extend(
-                _validator_text_template_findings(
-                    str(key),
-                    f"{relative_path}#/{'/'.join((*pointer, str(key)))}",
+    """Iterative JSON walk; avoids recursion depth/CPU on large manifests."""
+    findings: list[dict[str, Any]] = []
+    stack: list[tuple[Any, tuple[str, ...]]] = [(value, pointer)]
+    while stack:
+        current, current_pointer = stack.pop()
+        if _validator_pointer_is_opaque_frozen_history(relative_path, current_pointer):
+            continue
+        if isinstance(current, Mapping):
+            for key, item in reversed(list(current.items())):
+                findings.extend(
+                    _validator_text_template_findings(
+                        str(key),
+                        f"{relative_path}#/{'/'.join((*current_pointer, str(key)))}",
+                    )
                 )
+                stack.append((item, (*current_pointer, str(key))))
+            continue
+        if isinstance(current, list):
+            for index in range(len(current) - 1, -1, -1):
+                stack.append((current[index], (*current_pointer, str(index))))
+            continue
+        if not isinstance(current, str):
+            continue
+        pointer_text = "/" + "/".join(current_pointer) if current_pointer else "/"
+        findings.extend(
+            _validator_text_template_findings(
+                current,
+                f"{relative_path}#{pointer_text}",
             )
-            findings.extend(
-                _validator_json_template_findings(
-                    item,
-                    relative_path=relative_path,
-                    pointer=(*pointer, str(key)),
-                )
-            )
-        return findings
-    if isinstance(value, list):
-        findings = []
-        for index, item in enumerate(value):
-            findings.extend(
-                _validator_json_template_findings(
-                    item,
-                    relative_path=relative_path,
-                    pointer=(*pointer, str(index)),
-                )
-            )
-        return findings
-    if not isinstance(value, str):
-        return []
-    pointer_text = "/" + "/".join(pointer) if pointer else "/"
-    return _validator_text_template_findings(
-        value,
-        f"{relative_path}#{pointer_text}",
-    )
+        )
+    return findings
 
 
 def _check_placeholders(root: Path) -> list[dict[str, Any]]:
