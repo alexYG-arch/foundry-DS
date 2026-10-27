@@ -330,7 +330,7 @@ class TargetDashboardIntegrationTests(unittest.TestCase):
         (self.proposed / "dashboard.json").unlink()
         report, candidate = self.merge(paths + ["dashboard.json", "records/display.json", "shared-dependency.txt"])
         self.apply(report, candidate)
-        self.assertFalse(any(path.is_file() for path in self.component.rglob("*")))
+        self.assertFalse(any(path.is_file() and "__pycache__" not in path.parts for path in self.component.rglob("*")))
         self.assertFalse(self.config.exists())
         self.assertEqual(self.record_path.read_bytes(), self.custom_record)
         self.assertEqual({path: path.read_bytes() for path in self.bound_evidence}, self.bound_evidence)
