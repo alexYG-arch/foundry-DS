@@ -646,6 +646,32 @@ class BuildController:
         return self.store.append_batch(self.program_id, [{"event_type": kind, "payload": payload}],
             expected_revision=revision, idempotency_key=key, created_at=self.clock().isoformat(), require_new=True)[0]
 
+    def control_snapshot(self, prepared_id):
+        """Lightweight control facts for monitoring; no source/proposal bodies."""
+        auth = self.store.list_events_by_types(self.program_id, (
+            "BUILD_AUTHORIZATION_PREPARED", "BUILD_AUTHORIZATION_APPROVED",
+            "BUILD_AUTHORIZATION_REVOKED"))
+        attempts_events = self.store.list_events_by_types(self.program_id, (
+            "BUILD_ATTEMPT_STARTED", "BUILD_ATTEMPT_FINISHED", "BUILD_ATTEMPT_RECOVERED",
+            "BUILD_ATTEMPT_RESOLVED", "BUILD_ACCEPTANCE_INVALIDATED"))
+        events = sorted(auth + attempts_events, key=lambda row: row["stream_revision"])
+        prepared_event = self.store.get_event(self.program_id, prepared_id)
+        _check(prepared_event is not None and prepared_event["event_type"] == "BUILD_AUTHORIZATION_PREPARED",
+               "build authorization preparation is missing")
+        prepared = prepared_event["payload"]
+        approved = any(e["event_type"] == "BUILD_AUTHORIZATION_APPROVED"
+                       and e["payload"].get("prepared_event_id") == prepared_id for e in events)
+        revoked = any(e["event_type"] == "BUILD_AUTHORIZATION_REVOKED"
+                      and e["payload"].get("prepared_event_id") == prepared_id for e in events)
+        attempts, accepted = project_execution_state(events, prepared_id)
+        return {"prepared_event_id": prepared_id, "stream_revision": self.store.event_count(self.program_id),
+                "approved": approved, "revoked": revoked,
+                "expires_at": prepared["scope"]["expires_at"],
+                "attempts": attempts, "accepted": accepted,
+                "budget": attempt_budget(prepared["scope"],
+                                         list(project_budget_attempts(events, prepared_id).values())),
+                "source_loaded": False, "proposal_loaded": False}
+
     def _current(self, prepared_id, *, check_content=True):
         events = self.store.list_events(self.program_id)
         prepared = deepcopy(_event(events, prepared_id, "BUILD_AUTHORIZATION_PREPARED")["payload"])

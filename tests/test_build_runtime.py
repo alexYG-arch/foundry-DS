@@ -213,6 +213,16 @@ class BuildRuntimeTests(unittest.TestCase):
         return approve_build_authorization(self.store, self.program, self.prepared_id,
             human_message_ref="TEST-FIXTURE-HUMAN-APPROVAL-NOT-A-REAL-GRANT", **self.kwargs("approval"))
 
+    def test_control_snapshot_exposes_control_facts_without_source_loading(self):
+        self.prepare()
+        snapshot = self.controller().control_snapshot(self.prepared_id)
+        self.assertEqual(snapshot["prepared_event_id"], self.prepared_id)
+        self.assertTrue(snapshot["approved"])
+        self.assertFalse(snapshot["source_loaded"])
+        self.assertFalse(snapshot["proposal_loaded"])
+        self.assertIn("attempts", snapshot)
+        self.assertIn("budget", snapshot)
+
     def controller(self, **kwargs):
         return BuildController(self.store, self.program, runner=self.runner, clock=CLOCK, **kwargs)
 
