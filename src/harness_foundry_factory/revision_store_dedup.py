@@ -103,8 +103,29 @@ def migrate_to_dedup(source_path, target_path, *, copy_external=False):
                     raise RequestValidationError(f"migration target external dir already exists: {target_dir}")
                 shutil.copytree(source_dir, target_dir)
                 external[suffix] = {"source": str(source_dir), "target": str(target_dir)}
+    verification = verify_migration(source, target)
     return {"status": "MIGRATED", "source": str(source), "target": str(target),
-            "contents": len(contents), "external": external}
+            "contents": len(contents), "external": external, "verification": verification}
+
+
+def verify_migration(source_path, target_path):
+    """Compare source V1 and target dedup by event identity and hydrated payloads."""
+    from .revision_store import RevisionControlEventStore
+    source = RevisionControlEventStore(source_path, read_only=True, storage_format="REVISION_V1")
+    target = DedupRevisionControlEventStore(target_path, read_only=True)
+    # Compare every Program present in source without assuming one Program.
+    source_ids = sorted(source.list_program_ids())
+    target_ids = sorted(target.list_program_ids())
+    if source_ids != target_ids:
+        raise RequestValidationError("migration Program set differs")
+    for program in source_ids:
+        old = source.list_events(program)
+        new = target.list_events(program)
+        if [(row["event_id"], row["stream_revision"], row["event_type"], row["payload"]) for row in old] != [
+                (row["event_id"], row["stream_revision"], row["event_type"], row["payload"]) for row in new]:
+            raise RequestValidationError(f"migration event projection differs for {program}")
+    return {"status": "PASS", "programs": source_ids,
+            "events": sum(len(source.list_events(program)) for program in source_ids)}
 
 
 class DedupRevisionControlEventStore(RevisionControlEventStore):
