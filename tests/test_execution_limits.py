@@ -13,6 +13,7 @@ class LimitTests(unittest.TestCase):
         # A subprocess avoids fork deadlocks when the full suite is threaded.
         process = __import__("subprocess").run([
             __import__("sys").executable, "-c",
+            "import sys; sys.path.insert(0, " + repr(str(__import__("pathlib").Path(__file__).resolve().parents[1] / "src")) + "); "
             "from harness_foundry_factory.agents.limits import preexec; "
             "preexec(max_cpu_seconds=5, max_memory_bytes=512*1024*1024, max_fds=64)()"],
             text=True, capture_output=True, timeout=30)
