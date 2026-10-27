@@ -56,3 +56,36 @@ def render_markdown(view):
                 lines.append(f"- {row}")
         lines.append("")
     return "\n".join(lines)
+
+
+def impact_map(changes, affected_assertions):
+    """Return the declared change -> assertion relation, without inventing one."""
+    rows = []
+    for change in changes:
+        change_id = change.get("id") if isinstance(change, Mapping) else None
+        for assertion in affected_assertions:
+            if isinstance(assertion, Mapping) and change_id in assertion.get("change_ids", ()):
+                rows.append({"change_id": change_id, "assertion_id": assertion.get("id"),
+                             "status": assertion.get("status", "PENDING")})
+    return rows
+
+
+def paginate(view, section, offset=0, limit=50):
+    if section not in {"changes", "affected_assertions", "evidence", "history_refs", "pending", "limitations"}:
+        raise HandoffError("unknown current-view section")
+    if type(offset) is not int or type(limit) is not int or offset < 0 or limit <= 0:
+        raise HandoffError("offset/limit must be nonnegative/positive integers")
+    rows = view[section]
+    return {"section": section, "offset": offset, "limit": limit,
+            "total": len(rows), "items": rows[offset:offset + limit],
+            "has_more": offset + limit < len(rows)}
+
+
+def hydrate_history(view, loader):
+    """Resolve history references through caller-supplied read-only loader."""
+    resolved = []
+    for reference in view["history_refs"]:
+        value = loader(reference)
+        resolved.append({"reference": reference, "loaded": value is not None,
+                         "value": value if value is not None else None})
+    return resolved

@@ -287,6 +287,25 @@ class RevisionControlEventStore:
                 "event_type": str(row["event_type"]), "payload": json.loads(str(row["payload_json"])),
                 "created_at": str(row["created_at"])}
 
+    def list_events_by_types(self, program_id, event_types, *, after_revision=0, limit=None):
+        """Read only the control event families needed by one decision."""
+        types = tuple(event_types)
+        if not types or any(not isinstance(kind, str) or not kind for kind in types):
+            raise RequestValidationError("control event types must be nonempty text")
+        if type(after_revision) is not int or after_revision < 0:
+            raise RequestValidationError("after_revision must be nonnegative")
+        marks = ",".join("?" for _ in types)
+        sql = (f"SELECT * FROM control_events WHERE program_id = ? AND stream_revision > ? "
+               f"AND event_type IN ({marks}) ORDER BY stream_revision")
+        args = [program_id, after_revision, *types]
+        if limit is not None:
+            if type(limit) is not int or limit <= 0:
+                raise RequestValidationError("limit must be positive")
+            sql += " LIMIT ?"; args.append(limit)
+        with self._connection() as connection:
+            rows = connection.execute(sql, args).fetchall()
+        return [self._row_event(row) for row in rows]
+
     def list_events(self, program_id):
         with self._connection() as connection:
             rows = connection.execute(

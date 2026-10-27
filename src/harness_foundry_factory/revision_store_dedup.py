@@ -197,6 +197,11 @@ class DedupRevisionControlEventStore(RevisionControlEventStore):
         with self._connection() as connection:
             return [{**event, "payload": self._hydrate(event["payload"], connection)} for event in events]
 
+    def list_events_by_types(self, program_id, event_types, **kwargs):
+        events = super().list_events_by_types(program_id, event_types, **kwargs)
+        with self._connection() as connection:
+            return [{**event, "payload": self._hydrate(event["payload"], connection)} for event in events]
+
     def get_event(self, program_id, event_id):
         event = super().get_event(program_id, event_id)
         if event is None:
