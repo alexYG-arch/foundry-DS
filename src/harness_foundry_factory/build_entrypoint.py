@@ -21,6 +21,7 @@ from .build_runtime import (
 )
 from .build_types import RequestValidationError, RevisionConflictError, SAFE_ID_RE, canonical_json
 from .revision_store import RevisionControlEventStore as ControlEventStore
+from .revision_store_dedup import DedupRevisionControlEventStore
 from .process_observation import CommandObservation
 
 
@@ -42,6 +43,18 @@ MUTATIONS = {
 def _require(condition, message):
     if not condition:
         raise RequestValidationError(message)
+
+
+def _open_store(database, *, read_only=False):
+    path = Path(database)
+    if path.is_file():
+        import sqlite3
+        with sqlite3.connect(path.as_uri() + "?mode=ro", uri=True) as connection:
+            dedup = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='control_source_content'").fetchone()
+        if dedup:
+            return DedupRevisionControlEventStore(path, read_only=read_only)
+    return ControlEventStore(path, read_only=read_only, storage_format="REVISION_V1")
 
 
 def _database(value):
@@ -139,7 +152,7 @@ def _scope_readback(event, events):
 def read_build(control_db, program_id):
     """Read persisted declarations and progress without creating a database."""
     program_id = _program(program_id)
-    store = ControlEventStore(_database(control_db), read_only=True, storage_format="REVISION_V1")
+    store = _open_store(_database(control_db), read_only=True)
     events = store.list_events(program_id)
     if events and all(row["event_type"] == "BUILD_PREVIEW_CONFIRMED" for row in events):
         # A crash may follow the durable human confirmation but precede the
@@ -237,11 +250,11 @@ def apply_build_request(command, request, control_db):
             _require(isinstance(request["reason"], str) and request["reason"].strip(), "revocation reason is required")
     # Existing incompatible/historical stores are inspected read-only first.
     if database.exists():
-        existing = ControlEventStore(database, read_only=True, storage_format="REVISION_V1")
+        existing = _open_store(database, read_only=True)
         _require(set(existing.list_program_ids()) <= {program}, "controller belongs to another Program")
         if command == "advance-build" and len(existing.list_events(program)) != request["expected_revision"]:
             raise RevisionConflictError("re-read current build progress before dispatch")
-    store = ControlEventStore(database, storage_format="REVISION_V1")
+    store = _open_store(database)
     if command == "advance-build":
         current_events = store.list_events(program)
         prepared = next((row for row in current_events if row["event_id"] == request["prepared_event_id"]
