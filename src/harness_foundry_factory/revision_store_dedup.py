@@ -88,6 +88,8 @@ def migrate_to_dedup(source_path, target_path, *, copy_external=False):
             for sql in CONTROL_EVENT_STORE_TRIGGER_SQL.values():
                 target_connection.execute(sql)
             target_connection.commit()
+            target_connection.execute("VACUUM")
+            target_connection.commit()
         finally:
             target_connection.close()
     finally:
