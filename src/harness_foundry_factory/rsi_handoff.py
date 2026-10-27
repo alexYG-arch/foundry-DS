@@ -89,3 +89,19 @@ def hydrate_history(view, loader):
         resolved.append({"reference": reference, "loaded": value is not None,
                          "value": value if value is not None else None})
     return resolved
+
+
+def diff_views(previous, current):
+    """Compare two current-view envelopes by identity, never by embedded text."""
+    if previous.get("schema_version") != HANDOFF_SCHEMA or current.get("schema_version") != HANDOFF_SCHEMA:
+        raise HandoffError("both views must use RSI_CURRENT_VIEW_V1")
+    sections = ("changes", "affected_assertions", "evidence", "history_refs", "pending", "limitations")
+    result = {"schema_version": "RSI_CURRENT_VIEW_DIFF_V1", "sections": {}, "acceptance": False}
+    for section in sections:
+        old = {row.get("id"): row for row in previous[section] if isinstance(row, Mapping) and row.get("id")}
+        new = {row.get("id"): row for row in current[section] if isinstance(row, Mapping) and row.get("id")}
+        result["sections"][section] = {"added": sorted(set(new) - set(old)),
+                                       "removed": sorted(set(old) - set(new)),
+                                       "changed": sorted(key for key in set(old) & set(new) if old[key] != new[key])}
+    result["baseline_changed"] = previous["baseline"] != current["baseline"]
+    return result
