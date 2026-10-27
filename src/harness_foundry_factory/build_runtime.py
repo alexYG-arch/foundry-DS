@@ -135,19 +135,20 @@ def _local_argv(argv, scope):
     return command
 
 
-def reusable_source_event(store, program_id, source_root, manifest, snapshot):
+def reusable_source_event(store, program_id, source_root, manifest, snapshot, proposal_event_id=None):
     """Return an existing identical source capture, if its identity and bytes match."""
     for event in reversed(store.list_events_by_types(program_id, ("BUILD_SOURCES_CAPTURED",))):
         payload = event["payload"]
         if (payload.get("source_root") == str(source_root)
                 and payload.get("manifest") == manifest
-                and payload.get("snapshot") == snapshot):
+                and payload.get("snapshot") == snapshot
+                and (proposal_event_id is None or payload.get("proposal_event_id") == proposal_event_id)):
             return event
     return None
 
 
 def record_source_snapshot(store, program_id, proposal_event_id, source_root, manifest, *,
-                           expected_revision, idempotency_key, created_at, reuse_unchanged=False):
+                           expected_revision, idempotency_key, created_at, reuse_unchanged=True):
     proposal = _proposal_event(store, program_id, proposal_event_id)
     review = validate_build_review(proposal["payload"].get("document_review"))
     root = _directory(str(source_root))
@@ -156,7 +157,7 @@ def record_source_snapshot(store, program_id, proposal_event_id, source_root, ma
     validate_acceptance_contracts(proposal["payload"]["requirement_ir"], snapshot=snapshot)
     validate_review_sources(review, proposal["payload"]["requirement_ir"], source_root=root, snapshot=snapshot)
     if reuse_unchanged:
-        existing = reusable_source_event(store, program_id, root, manifest, snapshot)
+        existing = reusable_source_event(store, program_id, root, manifest, snapshot, proposal_event_id)
         if existing is not None:
             return existing
     return store.append_batch(program_id, [{"event_type": "BUILD_SOURCES_CAPTURED", "payload": {

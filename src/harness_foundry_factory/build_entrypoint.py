@@ -278,7 +278,7 @@ def apply_build_request(command, request, control_db):
         status = "BUILD_PLAN_RECORDED_NOT_AUTHORIZED"
     elif command == "capture-build-sources":
         event = record_source_snapshot(store, program, request["proposal_event_id"], request["source_root"],
-                                       request["manifest"], reuse_unchanged=request.get("reuse_unchanged", False), **kwargs)
+                                       request["manifest"], reuse_unchanged=request.get("reuse_unchanged", True), **kwargs)
         status = "BUILD_SOURCES_CAPTURED_NOT_SEMANTICALLY_ACCEPTED"
     elif command == "prepare-build-authorization":
         event = prepare_build_authorization(store, program, request["proposal_event_id"], request["source_event_id"], request["scope"],

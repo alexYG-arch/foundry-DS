@@ -6,9 +6,9 @@ import shutil
 from .rsi_cases import require, read_json
 
 MODULES = ('python_startup', 'build_types', 'build_plan', 'design_record', 'acceptance_contract', 'source_intake', 'build_state', 'revision_store',
-           'rsi_adoption', 'rsi_cases', 'rsi_review', 'rsi_tdd', 'rsi_wiki', 'test_execution')
+           'rsi_adoption', 'rsi_cases', 'rsi_review', 'rsi_tdd', 'rsi_wiki', 'rsi_handoff', 'test_execution')
 TOOLS = ('report_rsi_adoption', 'import_rsi_case', 'rsi_review', 'report_rsi_tdd', 'rsi_wiki')
-DOCS = ('RSI_ADOPTION', 'RSI_DELIVERY', 'RSI_CASE_INTAKE', 'RSI_REVIEW_AND_TDD', 'RSI_WIKI')
+DOCS = ('RSI_ADOPTION', 'RSI_DELIVERY', 'RSI_CASE_INTAKE', 'RSI_REVIEW_AND_TDD', 'RSI_WIKI', 'A4_CURRENT_VIEW')
 
 
 def relative(value):
