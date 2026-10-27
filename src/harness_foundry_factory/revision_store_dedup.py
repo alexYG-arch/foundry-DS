@@ -102,7 +102,7 @@ class DedupRevisionControlEventStore(RevisionControlEventStore):
     storage_format = "REVISION_V1_DEDUP"
 
     def __init__(self, database_path, *, read_only: bool = False):
-        super().__init__(database_path, read_only=read_only, storage_format="REVISION_V1")
+        super().__init__(database_path, read_only=read_only, storage_format="REVISION_V1", _allow_dedup=True)
         if read_only:
             with self._connection() as connection:
                 exists = connection.execute(
@@ -131,22 +131,29 @@ class DedupRevisionControlEventStore(RevisionControlEventStore):
                         source["text"] = {"content_sha256": digest}
         return value, contents
 
-    def _store_contents(self, contents: Mapping[str, str]) -> None:
-        if not contents:
-            return
-        with self._connection() as connection:
-            for digest, text in contents.items():
-                existing = connection.execute(
-                    "SELECT text FROM control_source_content WHERE content_sha256 = ?", (digest,)
-                ).fetchone()
-                if existing is not None:
-                    if existing["text"] != text:
-                        raise RequestValidationError("source content digest collision")
-                else:
-                    connection.execute(
-                        "INSERT INTO control_source_content(content_sha256, text, byte_length) VALUES (?, ?, ?)",
-                        (digest, text, len(text.encode("utf-8"))))
-            connection.commit()
+    def _prepare_entries(self, entries):
+        compacted, contents = [], {}
+        for entry in entries:
+            payload, found = self._compact(entry["payload"])
+            compacted.append({"event_type": entry["event_type"], "payload": payload})
+            contents.update(found)
+        self._pending_contents = contents
+        return compacted
+
+    def _append_aux(self, connection, entries):
+        contents = getattr(self, "_pending_contents", {})
+        self._pending_contents = {}
+        for digest, text in contents.items():
+            existing = connection.execute(
+                "SELECT text FROM control_source_content WHERE content_sha256 = ?", (digest,)
+            ).fetchone()
+            if existing is not None:
+                if existing["text"] != text:
+                    raise RequestValidationError("source content digest collision")
+            else:
+                connection.execute(
+                    "INSERT INTO control_source_content(content_sha256, text, byte_length) VALUES (?, ?, ?)",
+                    (digest, text, len(text.encode("utf-8"))))
 
     def _hydrate(self, payload: Any, connection) -> Any:
         value = copy.deepcopy(payload)
@@ -168,13 +175,7 @@ class DedupRevisionControlEventStore(RevisionControlEventStore):
         return value
 
     def append_batch(self, program_id, entries, **kwargs):
-        compacted, contents = [], {}
-        for entry in entries:
-            payload, found = self._compact(entry["payload"])
-            compacted.append({"event_type": entry["event_type"], "payload": payload})
-            contents.update(found)
-        self._store_contents(contents)
-        appended = super().append_batch(program_id, compacted, **kwargs)
+        appended = super().append_batch(program_id, entries, **kwargs)
         with self._connection() as connection:
             return [{"schema_version": row["schema_version"], "event_id": row["event_id"],
                      "program_id": row["program_id"], "stream_revision": row["stream_revision"],

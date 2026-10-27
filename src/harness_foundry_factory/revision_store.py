@@ -49,7 +49,7 @@ class RevisionControlEventStore:
 
     def __init__(
         self, database_path: str | Path, *, read_only: bool = False,
-        storage_format: str = "REVISION_V1",
+        storage_format: str = "REVISION_V1", _allow_dedup: bool = False,
     ) -> None:
         if storage_format != "REVISION_V1":
             raise RequestValidationError("unsupported control event storage format")
@@ -62,6 +62,14 @@ class RevisionControlEventStore:
                 "read-only control event store does not exist",
                 details={"database_path": str(self.database_path)},
             )
+        if database_existed and not _allow_dedup:
+            with self._connection() as connection:
+                if connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='control_source_content'").fetchone():
+                    raise RequestValidationError(
+                        "store uses REVISION_V1_DEDUP; open it with DedupRevisionControlEventStore",
+                        details={"storage_format": "REVISION_V1_DEDUP"},
+                    )
         if read_only:
             with self._connection() as connection:
                 self._require_exact_existing_schema(connection, self._table_columns)
@@ -191,6 +199,7 @@ class RevisionControlEventStore:
                 or not idempotency_key or not isinstance(created_at, str) or not created_at
                 or not isinstance(entries, (list, tuple)) or not entries):
             raise RequestValidationError("control event batch requires program_id, idempotency_key, time and entries")
+        entries = self._prepare_entries(entries)
         normalized = []
         for entry in entries:
             if (not isinstance(entry, Mapping) or set(entry) != {"event_type", "payload"}
@@ -224,6 +233,7 @@ class RevisionControlEventStore:
             if expected_revision != revision:
                 raise RevisionConflictError("control event stream changed before append",
                                          details={"expected_revision": expected_revision, "actual_revision": revision})
+            self._append_aux(connection, normalized)
             appended = []
             for entry in normalized:
                 revision += 1
@@ -239,6 +249,14 @@ class RevisionControlEventStore:
             connection.commit()
             return appended
 
+
+    def _prepare_entries(self, entries):
+        """Store-format hook; default keeps bytes unchanged."""
+        return entries
+
+    def _append_aux(self, connection, entries):
+        """Store-format hook inside the append transaction."""
+        return None
 
     def idempotent_events(self, program_id, idempotency_key):
         """Read an existing reservation without reserving another effect."""

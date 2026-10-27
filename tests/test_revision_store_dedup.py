@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from harness_foundry_factory.revision_store import RevisionControlEventStore
 from harness_foundry_factory.revision_store_dedup import DedupRevisionControlEventStore, migrate_to_dedup
 
 TEXT = "alpha\nbeta\n"
@@ -50,6 +51,13 @@ class DedupStoreTests(unittest.TestCase):
             new = DedupRevisionControlEventStore(target, read_only=True)
             self.assertEqual(new.list_events("P")[0]["payload"]["snapshot"]["sources"][0]["text"], TEXT)
             self.assertEqual(new.idempotent_events("P", "k")[0]["payload"]["snapshot"]["sources"][0]["text"], TEXT)
+
+    def test_v1_store_rejects_dedup_database(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "control.sqlite3"
+            DedupRevisionControlEventStore(path)
+            with self.assertRaises(Exception):
+                RevisionControlEventStore(path)
 
     def test_v1_store_is_untouched(self):
         with tempfile.TemporaryDirectory() as d:
