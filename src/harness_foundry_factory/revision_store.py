@@ -250,16 +250,32 @@ class RevisionControlEventStore:
 
     _idempotent_events = idempotent_events
 
+    def get_event(self, program_id, event_id):
+        """Read one event by its Program-scoped identity, without history expansion."""
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM control_events WHERE program_id = ? AND event_id = ?",
+                (program_id, event_id)).fetchone()
+        return self._row_event(row) if row is not None else None
+
+    def event_count(self, program_id):
+        with self._connection() as connection:
+            return int(connection.execute(
+                "SELECT COUNT(*) FROM control_events WHERE program_id = ?", (program_id,)).fetchone()[0])
+
+    def _row_event(self, row):
+        return {"schema_version": "REVISION_V1", "event_id": str(row["event_id"]),
+                "program_id": str(row["program_id"]), "stream_revision": int(row["stream_revision"]),
+                "event_type": str(row["event_type"]), "payload": json.loads(str(row["payload_json"])),
+                "created_at": str(row["created_at"])}
+
     def list_events(self, program_id):
         with self._connection() as connection:
             rows = connection.execute(
                 "SELECT * FROM control_events WHERE program_id = ? ORDER BY stream_revision",
                 (program_id,),
             ).fetchall()
-        return [{"schema_version": "REVISION_V1", "event_id": str(row["event_id"]),
-                 "program_id": str(row["program_id"]), "stream_revision": int(row["stream_revision"]),
-                 "event_type": str(row["event_type"]), "payload": json.loads(str(row["payload_json"])),
-                 "created_at": str(row["created_at"])} for row in rows]
+        return [self._row_event(row) for row in rows]
 
     def list_program_ids(self):
         with self._connection() as connection:

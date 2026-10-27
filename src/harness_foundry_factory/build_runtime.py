@@ -1356,8 +1356,10 @@ class BuildController:
             try:
                 validate_authority_chain(rows, binding["prepared_event_id"], self.clock())
             except RequestValidationError as exc:
-                return ("BUILD_AUTHORIZATION_REVOKED" if "revoked" in str(exc) else
-                        "BUILD_AUTHORIZATION_EXPIRED" if "expired" in str(exc) else "BUILD_AUTHORIZATION_ABSENT")
+                code = (exc.details or {}).get("reason_code", "AUTHORIZATION_CHAIN_INVALID")
+                return ("BUILD_AUTHORIZATION_REVOKED" if code == "AUTHORIZATION_REVOKED" else
+                        "BUILD_AUTHORIZATION_EXPIRED" if code == "AUTHORIZATION_EXPIRED" else
+                        "BUILD_AUTHORIZATION_ABSENT")
             return None
 
         if preparation_failure is not None:

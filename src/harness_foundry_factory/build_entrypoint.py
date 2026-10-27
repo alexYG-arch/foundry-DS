@@ -99,9 +99,12 @@ def _scope_readback(event, events):
         try:
             validate_authority_chain(events, prepared_id, datetime.now(timezone.utc))
         except RequestValidationError as exc:
-            authority["authority_unavailable_reason"] = str(exc)
+            code = (exc.details or {}).get("reason_code", "AUTHORIZATION_CHAIN_INVALID")
+            authority["authority_unavailable_reason"] = code
+            authority["authority_unavailable_message"] = str(exc)
             if state == "APPROVED":
-                state = "REVOKED" if "revoked" in str(exc) else "EXPIRED" if "expired" in str(exc) else "APPROVAL_REQUIRED"
+                state = ("REVOKED" if code == "AUTHORIZATION_REVOKED" else
+                         "EXPIRED" if code == "AUTHORIZATION_EXPIRED" else "APPROVAL_REQUIRED")
     source = next(row for row in events if row["event_id"] == payload["source_event_id"])
     proposal = next(row for row in events if row["event_id"] == payload["proposal_event_id"])
     attempts = [row["payload"] for row in events if row["event_type"] == "BUILD_ATTEMPT_STARTED"

@@ -35,6 +35,14 @@ class RequestValidationError(FactoryError):
     exit_code = 2
 
 
+class AuthorityUnavailableError(RequestValidationError):
+    """Stable authority failure classification; message text is not the contract."""
+
+    def __init__(self, message: str, *, reason_code: str):
+        super().__init__(message, details={"reason_code": reason_code})
+        self.reason_code = reason_code
+
+
 class StateConflictError(FactoryError):
     code = "STATE_HASH_CONFLICT"  # Historical error spelling, not a new hash operation.
     exit_code = 4

@@ -13,7 +13,7 @@ from .build_artifacts import file_identity, relative_path
 from .build_rebind import (_event, _production_signature, approval_rebind,
                            superseding_prepared)
 from .build_state import project_budget_attempts, project_execution_state
-from .build_types import (IdempotencyConflictError, RequestValidationError,
+from .build_types import (AuthorityUnavailableError, IdempotencyConflictError, RequestValidationError,
                           RevisionConflictError)
 from .process_observation import CommandObservation
 
@@ -25,6 +25,11 @@ TECHNICAL_POLICY = "HOST_TECHNICAL_DISPOSITION_V1"
 def require(condition, message):
     if not condition:
         raise RequestValidationError(message)
+
+
+def _authority_require(condition, message, reason_code):
+    if not condition:
+        raise AuthorityUnavailableError(message, reason_code=reason_code)
 
 
 def _text(value):
@@ -47,31 +52,31 @@ def validate_authority_chain(events, prepared_id, now):
     current = prepared_id
     approvals = []
     while current is not None:
-        require(current not in seen, "cyclic derived authorization")
+        _authority_require(current not in seen, "cyclic derived authorization", "AUTHORIZATION_CHAIN_INVALID")
         seen.add(current)
         prepared = _event(events, current, "BUILD_AUTHORIZATION_PREPARED")
         matches = [e for e in events if e["event_type"] == "BUILD_AUTHORIZATION_APPROVED"
                    and e["payload"].get("prepared_event_id") == current]
-        require(bool(matches), "build authorization is absent")
+        _authority_require(bool(matches), "build authorization is absent", "AUTHORIZATION_ABSENT")
         approval = matches[-1]
-        require(not any(e["event_type"] == "BUILD_AUTHORIZATION_REVOKED"
+        _authority_require(not any(e["event_type"] == "BUILD_AUTHORIZATION_REVOKED"
                         and e["payload"].get("prepared_event_id") == current for e in events),
-                "build authorization or its source approval was revoked")
-        require(_utc(now) < _utc(prepared["payload"]["scope"]["expires_at"]),
-                "build authorization or its source approval expired")
+                "build authorization or its source approval was revoked", "AUTHORIZATION_REVOKED")
+        _authority_require(_utc(now) < _utc(prepared["payload"]["scope"]["expires_at"]),
+                "build authorization or its source approval expired", "AUTHORIZATION_EXPIRED")
         approvals.append(approval["event_id"])
         basis = approval["payload"].get("derived_authority")
         if basis is None:
-            require(_text(approval["payload"].get("human_message_ref")),
-                    "authorization chain has no actual human approval")
+            _authority_require(_text(approval["payload"].get("human_message_ref")),
+                    "authorization chain has no actual human approval", "AUTHORIZATION_NOT_HUMAN")
             break
-        require(isinstance(basis, dict) and set(basis) == {
+        _authority_require(isinstance(basis, dict) and set(basis) == {
                     "policy", "source_prepared_event_id", "source_approval_event_id"}
-                and basis["policy"] == POLICY, "unknown derived authorization basis")
+                and basis["policy"] == POLICY, "unknown derived authorization basis", "AUTHORIZATION_CHAIN_INVALID")
         parent = _event(events, basis["source_approval_event_id"], "BUILD_AUTHORIZATION_APPROVED")
-        require(parent["payload"].get("prepared_event_id") == basis["source_prepared_event_id"]
+        _authority_require(parent["payload"].get("prepared_event_id") == basis["source_prepared_event_id"]
                 and parent["stream_revision"] < approval["stream_revision"],
-                "derived authorization source differs")
+                "derived authorization source differs", "AUTHORIZATION_CHAIN_INVALID")
         current = basis["source_prepared_event_id"]
     return approvals
 

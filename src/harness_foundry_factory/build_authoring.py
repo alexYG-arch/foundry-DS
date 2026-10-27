@@ -68,8 +68,12 @@ def record_build_plan_proposal(store: ControlEventStore, requirement_ir: Mapping
 
 def _proposal_event(store: ControlEventStore, program_id: str, event_id: str | None) -> dict[str, Any]:
     _require_revision_store(store)
-    events = [event for event in store.list_events(program_id) if event["event_type"] == PROPOSAL_EVENT
-              and (event_id is None or event["event_id"] == event_id)]
+    if event_id is not None:
+        event = store.get_event(program_id, event_id)
+        if event is None or event["event_type"] != PROPOSAL_EVENT:
+            raise RequestValidationError("build proposal does not exist for this Program and event")
+        return event
+    events = [event for event in store.list_events(program_id) if event["event_type"] == PROPOSAL_EVENT]
     if not events:
         raise RequestValidationError("build proposal does not exist for this Program and event")
     return events[-1]

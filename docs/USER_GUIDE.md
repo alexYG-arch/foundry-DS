@@ -248,8 +248,9 @@ CSV 须包含指定列。普通 audit 输出缺值报告；`--strict` 发现缺�
 python3 tools/hffactory.py read-build --control-db "/absolute/path/control.sqlite3" --program-id "YOUR-PROGRAM-ID" --json
 ```
 
-**为什么需要确认两次？** 文档确认“做什么”，执行范围确认“用哪些工具、花多少预算、改哪里”。
-之后的普通任务不需要逐个批准。
+**为什么有时需要确认两次？** 文档确认“做什么”，执行范围确认“用哪些工具、花多少预算、改哪里”。
+完整合同与运行条件已经齐备时，可使用 `preview-build → materialize-build-preview` 把两次等待合成一次真实决定；
+原分步路径继续适用，旧批准无需补做预览。之后的普通任务不需要逐个批准。
 
 **只安装 Python 就能生成 Harness 吗？** 不能。Python 负责控制与本地处理，实际推理和开发还需要可用的 DSH/DeepSeek（或 legacy Codex）与模型服务。
 
