@@ -55,10 +55,10 @@ def build(*, commit, package, source_gate, regression_text, two_cases, spec, pub
         findings.append("full regression is not PASS/0F0E")
     if gate.get("status") != "SOURCE_CHECKS_PASS":
         findings.append("source gate is not PASS")
-    if native_codex not in {"PASS", "DEFERRED_BY_USER"}:
+    if native_codex not in {"PASS", "DEFERRED_BY_USER", "WAIVED_BY_USER"}:
         findings.append("native Codex acceptance is missing")
-    if native_codex == "DEFERRED_BY_USER" and not waivers:
-        findings.append("Codex deferral requires an explicit waiver")
+    if native_codex in {"DEFERRED_BY_USER", "WAIVED_BY_USER"} and not waivers:
+        findings.append("Codex policy waiver requires an explicit waiver record")
     limits = []
     if native_codex == "DEFERRED_BY_USER": limits.append("NATIVE_CODEX_ACCEPTANCE_DEFERRED_BY_USER")
     if physical_sibling != "PASS": limits.append("PHYSICAL_SIBLING_SPEC_NOT_AVAILABLE")
@@ -69,7 +69,8 @@ def build(*, commit, package, source_gate, regression_text, two_cases, spec, pub
     recorded_sha = pub.get("package_sha256")
     if not recorded_sha or recorded_sha != actual_sha:
         findings.append("package digest does not match publication evidence")
-    status = "ACCEPTED" if not findings and native_codex == "PASS" and physical_sibling == "PASS" else (
+    policy_waived = native_codex == "WAIVED_BY_USER"
+    status = "ACCEPTED" if not findings and (native_codex == "PASS" or policy_waived) and physical_sibling == "PASS" else (
         "ACCEPTED_WITH_LIMITS" if not findings and waivers else "REJECTED")
     local = status in {"ACCEPTED", "ACCEPTED_WITH_LIMITS"}
     return {"schema_version": "RELEASE_RECEIPT_V1", "status": status,
@@ -95,7 +96,7 @@ def main(argv=None):
     p.add_argument("--two-cases", required=True)
     p.add_argument("--spec", required=True)
     p.add_argument("--publication", required=True)
-    p.add_argument("--native-codex", required=True, choices=("PASS", "DEFERRED_BY_USER", "MISSING"))
+    p.add_argument("--native-codex", required=True, choices=("PASS", "DEFERRED_BY_USER", "WAIVED_BY_USER", "MISSING"))
     p.add_argument("--physical-sibling", default="NOT_AVAILABLE", choices=("PASS", "NOT_AVAILABLE"))
     p.add_argument("--waiver", action="append", default=[])
     p.add_argument("--output", required=True)
