@@ -52,6 +52,16 @@ class DedupStoreTests(unittest.TestCase):
             self.assertEqual(new.list_events("P")[0]["payload"]["snapshot"]["sources"][0]["text"], TEXT)
             self.assertEqual(new.idempotent_events("P", "k")[0]["payload"]["snapshot"]["sources"][0]["text"], TEXT)
 
+    def test_migration_can_copy_external_observation_dirs(self):
+        from harness_foundry_factory.revision_store import RevisionControlEventStore
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / "source.sqlite3"; target = Path(d) / "target.sqlite3"
+            RevisionControlEventStore(source)
+            commands = source.with_suffix(".commands"); commands.mkdir(); (commands / "x.json").write_text("{}")
+            result = migrate_to_dedup(source, target, copy_external=True)
+            self.assertTrue((target.with_suffix(".commands") / "x.json").is_file())
+            self.assertEqual(result["external"][".commands"]["target"], str(target.with_suffix(".commands").resolve()))
+
     def test_v1_store_rejects_dedup_database(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "control.sqlite3"

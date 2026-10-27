@@ -220,7 +220,8 @@ def apply_build_request(command, request, control_db):
         required = MUTATIONS.get(command, set()) | {"expected_revision", "idempotency_key"}
         optional = ({"continuation_of"} if command == "request-build-repair" else
                     {"rebind_from", "follow_codex_defaults"} if command == "prepare-build-authorization" else
-                    {"host_reconciliation"} if command == "resolve-build-attempt" else set())
+                    {"host_reconciliation"} if command == "resolve-build-attempt" else
+                    {"reuse_unchanged"} if command == "capture-build-sources" else set())
         _require(command in MUTATIONS and required <= set(request) <= required | optional,
                  "build request has missing or unsupported fields")
         _require(isinstance(request["idempotency_key"], str) and request["idempotency_key"].strip(), "idempotency_key is required")
@@ -276,7 +277,8 @@ def apply_build_request(command, request, control_db):
                                            document_review=request["document_review"], **kwargs)
         status = "BUILD_PLAN_RECORDED_NOT_AUTHORIZED"
     elif command == "capture-build-sources":
-        event = record_source_snapshot(store, program, request["proposal_event_id"], request["source_root"], request["manifest"], **kwargs)
+        event = record_source_snapshot(store, program, request["proposal_event_id"], request["source_root"],
+                                       request["manifest"], reuse_unchanged=request.get("reuse_unchanged", False), **kwargs)
         status = "BUILD_SOURCES_CAPTURED_NOT_SEMANTICALLY_ACCEPTED"
     elif command == "prepare-build-authorization":
         event = prepare_build_authorization(store, program, request["proposal_event_id"], request["source_event_id"], request["scope"],

@@ -17,9 +17,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source")
     parser.add_argument("target")
+    parser.add_argument("--copy-observations", action="store_true",
+                        help="copy .commands/.verifiers siblings; source stays read-only")
     args = parser.parse_args(argv)
     try:
-        result = migrate_to_dedup(args.source, args.target)
+        result = migrate_to_dedup(args.source, args.target, copy_external=args.copy_observations)
     except Exception as exc:
         result = {"status": "FAIL", "error": f"{type(exc).__name__}: {exc}"}
     print(json.dumps(result, ensure_ascii=False, indent=2))

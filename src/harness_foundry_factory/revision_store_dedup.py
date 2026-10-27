@@ -31,7 +31,7 @@ def _digest(text: str) -> str:
 
 
 
-def migrate_to_dedup(source_path, target_path):
+def migrate_to_dedup(source_path, target_path, *, copy_external=False):
     """Offline copy V1 -> dedup format; source is opened read-only and untouched.
 
     Caller must stop writers and choose an absent target. The copy uses the
@@ -92,8 +92,19 @@ def migrate_to_dedup(source_path, target_path):
             target_connection.close()
     finally:
         source_connection.close()
+    external = {}
+    if copy_external:
+        import shutil
+        for suffix in (".commands", ".verifiers"):
+            source_dir = source.with_suffix(suffix)
+            target_dir = target.with_suffix(suffix)
+            if source_dir.is_dir():
+                if target_dir.exists():
+                    raise RequestValidationError(f"migration target external dir already exists: {target_dir}")
+                shutil.copytree(source_dir, target_dir)
+                external[suffix] = {"source": str(source_dir), "target": str(target_dir)}
     return {"status": "MIGRATED", "source": str(source), "target": str(target),
-            "contents": len(contents)}
+            "contents": len(contents), "external": external}
 
 
 class DedupRevisionControlEventStore(RevisionControlEventStore):
