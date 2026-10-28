@@ -12,10 +12,10 @@ from .build_authoring import read_build_plan_proposal, record_build_plan_proposa
 from .build_plan import compile_build_plan, validate_compiled_build_plan
 from .build_repair import request_build_repair
 from .build_state import attempt_budget, project_readback_attempts, project_budget_attempts, project_execution_state
-from .build_rebind import superseding_prepared, reverification_candidates
+from .build_rebind import reverification_candidates
 from .build_review import validate_build_review, validate_review_sources, review_summary
 from .build_runtime import (
-    BuildController, _utc, approve_build_authorization, prepare_build_authorization,
+    BuildController, approve_build_authorization, prepare_build_authorization,
     record_source_snapshot, revoke_build_authorization,
     resolve_build_attempt,
 )
@@ -94,30 +94,13 @@ def _source_summary(event):
 def _scope_readback(event, events):
     payload = event["payload"]
     prepared_id = event["event_id"]
-    approved = any(row["event_type"] == "BUILD_AUTHORIZATION_APPROVED"
-                   and row["payload"]["prepared_event_id"] == prepared_id for row in events)
-    revoked = any(row["event_type"] == "BUILD_AUTHORIZATION_REVOKED"
-                  and row["payload"]["prepared_event_id"] == prepared_id for row in events)
-    successor = superseding_prepared(events, prepared_id)
-    state = ("SUPERSEDED" if successor else "REVOKED" if revoked else "EXPIRED" if _utc(payload["scope"]["expires_at"]) <= datetime.now(timezone.utc)
-             else "APPROVED" if approved else "APPROVAL_REQUIRED")
-    approval = next((row for row in reversed(events) if row["event_type"] == "BUILD_AUTHORIZATION_APPROVED"
-                     and row["payload"].get("prepared_event_id") == prepared_id), None)
-    authority = {}
-    if approval is not None and approval["payload"].get("approval_basis"):
-        authority["approval_basis"] = approval["payload"]["approval_basis"]
-    if approval is not None and approval["payload"].get("derived_authority"):
-        authority["derived_authority"] = approval["payload"]["derived_authority"]
-        from .build_correction import validate_authority_chain
-        try:
-            validate_authority_chain(events, prepared_id, datetime.now(timezone.utc))
-        except RequestValidationError as exc:
-            code = (exc.details or {}).get("reason_code", "AUTHORIZATION_CHAIN_INVALID")
-            authority["authority_unavailable_reason"] = code
-            authority["authority_unavailable_message"] = str(exc)
-            if state == "APPROVED":
-                state = ("REVOKED" if code == "AUTHORIZATION_REVOKED" else
-                         "EXPIRED" if code == "AUTHORIZATION_EXPIRED" else "APPROVAL_REQUIRED")
+    # One state vocabulary for readback, the control view and dispatch.
+    from .control_view import authority_state
+    facts = authority_state(events, prepared_id, payload, datetime.now(timezone.utc))
+    state = facts["state"]
+    successor = facts.get("superseded_by")
+    authority = {key: facts[key] for key in ("approval_basis", "derived_authority", "authority_unavailable_reason",
+                                             "authority_unavailable_message") if key in facts}
     source = next(row for row in events if row["event_id"] == payload["source_event_id"])
     proposal = next(row for row in events if row["event_id"] == payload["proposal_event_id"])
     attempts = [row["payload"] for row in events if row["event_type"] == "BUILD_ATTEMPT_STARTED"
@@ -147,6 +130,20 @@ def _scope_readback(event, events):
             "directory_creation": ("CHECKER_SNAPSHOT_DURING_PREPARE_RESOURCES_DURING_APPROVED_ADVANCE"
                                    if "verifier_source" in payload else "ONLY_DURING_APPROVED_ADVANCE"),
             "freshness_rechecked_at_dispatch": True, "execution_started_by_readback": False}
+
+
+def read_build_control_view(control_db, program_id, prepared_event_id):
+    """Revision-consistent control facts for one preparation, without loading
+    source or proposal bodies. Its ``stream_revision`` is the intended
+    ``expected_revision`` for a cancellation/revocation based on these facts."""
+    from .control_view import build_control_view
+    program_id = _program(program_id)
+    _require(isinstance(prepared_event_id, str) and prepared_event_id.strip(),
+             "read-build --control-view requires --prepared-event-id")
+    store = _open_store(_database(control_db), read_only=True)
+    view = build_control_view(store, program_id, prepared_event_id)
+    return {"status": "BUILD_CONTROL_VIEW", **view, "writes_performed": False,
+            "execution_started": False, "harness_e2e_verified": False}
 
 
 def read_build(control_db, program_id):

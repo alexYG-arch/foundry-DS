@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import re
 from typing import Any, Mapping
@@ -14,6 +15,22 @@ def canonical_json(value: Any) -> str:
     """Stable JSON comparison/storage, not a digest or acceptance result."""
     return json.dumps(value, ensure_ascii=False, sort_keys=True,
                       separators=(",", ":"), allow_nan=False)
+
+
+def parse_utc(value: Any) -> datetime:
+    """One timestamp rule for every control-plane reader and writer.
+
+    Accepts an ISO-8601 string with an explicit offset (``Z`` allowed) or an
+    aware ``datetime``; naive or malformed values are request errors, never a
+    bare ``ValueError`` that one caller maps and another lets escape.
+    """
+    try:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, AttributeError, ValueError) as exc:
+        raise RequestValidationError("time must be an ISO timestamp with timezone") from exc
+    if parsed.tzinfo is None:
+        raise RequestValidationError("time must include its timezone")
+    return parsed.astimezone(timezone.utc)
 
 
 class FactoryError(Exception):

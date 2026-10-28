@@ -292,17 +292,27 @@ class RevisionControlEventStore:
                 "event_type": str(row["event_type"]), "payload": json.loads(str(row["payload_json"])),
                 "created_at": str(row["created_at"])}
 
-    def list_events_by_types(self, program_id, event_types, *, after_revision=0, limit=None):
-        """Read only the control event families needed by one decision."""
+    def list_events_by_types(self, program_id, event_types, *, after_revision=0, up_to_revision=None, limit=None):
+        """Read only the control event families needed by one decision.
+
+        ``up_to_revision`` pins the read to a revision obtained beforehand (for
+        example from ``event_count``), so several typed reads on separate
+        connections describe one consistent prefix of the stream.
+        """
         types = tuple(event_types)
         if not types or any(not isinstance(kind, str) or not kind for kind in types):
             raise RequestValidationError("control event types must be nonempty text")
         if type(after_revision) is not int or after_revision < 0:
             raise RequestValidationError("after_revision must be nonnegative")
+        if up_to_revision is not None and (type(up_to_revision) is not int or up_to_revision < after_revision):
+            raise RequestValidationError("up_to_revision must be an integer not below after_revision")
         marks = ",".join("?" for _ in types)
         sql = (f"SELECT * FROM control_events WHERE program_id = ? AND stream_revision > ? "
-               f"AND event_type IN ({marks}) ORDER BY stream_revision")
+               f"AND event_type IN ({marks})")
         args = [program_id, after_revision, *types]
+        if up_to_revision is not None:
+            sql += " AND stream_revision <= ?"; args.append(up_to_revision)
+        sql += " ORDER BY stream_revision"
         if limit is not None:
             if type(limit) is not int or limit <= 0:
                 raise RequestValidationError("limit must be positive")

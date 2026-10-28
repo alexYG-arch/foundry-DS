@@ -28,7 +28,7 @@ from .build_review import validate_build_review, validate_review_sources
 from .local_process import LocalCommand, CodexSandboxRunner, unsupported_isolation_paths
 from .agents import CodexCliAdapter, CodexSandboxProvider
 from .agents.base import AgentRequest
-from .build_types import RequestValidationError, RevisionConflictError, IdempotencyConflictError, canonical_json
+from .build_types import RequestValidationError, RevisionConflictError, IdempotencyConflictError, canonical_json, parse_utc
 from .process_observation import CommandObservation
 from .source_intake import load_local_sources, validate_requirement_source_bindings
 from .build_effects import snapshot_effects, compare_effects, environment_probe_argv, effect_path
@@ -90,13 +90,7 @@ def _check_native_layout(store, scope, source=None):
            "SHARED_TEMP_ISOLATION_UNSUPPORTED: macOS /tmp cannot protect controller, verifier, source or target boundaries; use a verified non-shared directory")
 
 
-def _utc(value):
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        _check(parsed.tzinfo is not None, "time must include its timezone")
-        return parsed.astimezone(timezone.utc)
-    except (TypeError, AttributeError, ValueError) as exc:
-        raise RequestValidationError("time must be an ISO timestamp with timezone") from exc
+_utc = parse_utc
 
 
 def _directory(value, *, allow_missing=False):
@@ -651,34 +645,12 @@ class BuildController:
             expected_revision=revision, idempotency_key=key, created_at=self.clock().isoformat(), require_new=True)[0]
 
     def control_view(self, prepared_id):
+        """Revision-consistent control facts; no source/proposal bodies (see control_view.py)."""
         from .control_view import build_control_view
         return build_control_view(self.store, self.program_id, prepared_id, now=self.clock())
 
-    def control_snapshot(self, prepared_id):
-        """Lightweight control facts for monitoring; no source/proposal bodies."""
-        auth = self.store.list_events_by_types(self.program_id, (
-            "BUILD_AUTHORIZATION_PREPARED", "BUILD_AUTHORIZATION_APPROVED",
-            "BUILD_AUTHORIZATION_REVOKED"))
-        attempts_events = self.store.list_events_by_types(self.program_id, (
-            "BUILD_ATTEMPT_STARTED", "BUILD_ATTEMPT_FINISHED", "BUILD_ATTEMPT_RECOVERED",
-            "BUILD_ATTEMPT_RESOLVED", "BUILD_ACCEPTANCE_INVALIDATED"))
-        events = sorted(auth + attempts_events, key=lambda row: row["stream_revision"])
-        prepared_event = self.store.get_event(self.program_id, prepared_id)
-        _check(prepared_event is not None and prepared_event["event_type"] == "BUILD_AUTHORIZATION_PREPARED",
-               "build authorization preparation is missing")
-        prepared = prepared_event["payload"]
-        approved = any(e["event_type"] == "BUILD_AUTHORIZATION_APPROVED"
-                       and e["payload"].get("prepared_event_id") == prepared_id for e in events)
-        revoked = any(e["event_type"] == "BUILD_AUTHORIZATION_REVOKED"
-                      and e["payload"].get("prepared_event_id") == prepared_id for e in events)
-        attempts, accepted = project_execution_state(events, prepared_id)
-        return {"prepared_event_id": prepared_id, "stream_revision": self.store.event_count(self.program_id),
-                "approved": approved, "revoked": revoked,
-                "expires_at": prepared["scope"]["expires_at"],
-                "attempts": attempts, "accepted": accepted,
-                "budget": attempt_budget(prepared["scope"],
-                                         list(project_budget_attempts(events, prepared_id).values())),
-                "source_loaded": False, "proposal_loaded": False}
+    # The v1 snapshot is the same projection; one implementation, one vocabulary.
+    control_snapshot = control_view
 
     def _current(self, prepared_id, *, check_content=True):
         events = self.store.list_events(self.program_id)

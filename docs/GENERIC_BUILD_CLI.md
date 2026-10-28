@@ -78,6 +78,7 @@ Review，再使用本入口；原始材料保留追溯角色。后台检查全�
 | `request-build-repair` | 同上 | `program_id`, `prepared_event_id`, `targets`, `finding`；可选 `continuation_of` |
 | `advance-build` | 同上 | `program_id`, `prepared_event_id`, `expected_revision`；可选 `advance_mode`, `codex_handoff` |
 | `read-build` | `--control-db DB --program-id ID` | 无 request 文件 |
+| `read-build --control-view` | `--control-db DB --program-id ID --prepared-event-id ID` | 只读单个准备范围的授权/attempt/预算事实，不加载来源与提案正文；无 request 文件 |
 | `read-history` | `--database DB --program-id ID` | 只读旧 authoring 数据库，无 request 文件 |
 
 `read-history` 只读取明确指定数据库中的原始 Program snapshot，不调用旧服务、不初始化
@@ -98,6 +99,12 @@ Review，再使用本入口；原始材料保留追溯角色。后台检查全�
 NO_IMPLEMENTATION_COMMAND，并列出 `missing_implementation_command_ids`；顶层
 `repair_requests` 保留返修事件依据。缺观测明确保留缺口，
 `final_message` 不代表完整交接。只读取回不触发推进或命令恢复；见[报告恢复与计数](GENERIC_BUILD_RUNTIME.md#codex-报告恢复与计数交接)。
+
+`read-build --control-view --prepared-event-id ID` 返回 `CONTROL_VIEW_V2`：先读取 stream revision，
+再把全部按类型读取钉在该 revision 之内，因此 `stream_revision` 与所列事实描述同一前缀；基于这些事实
+做撤销/取消时，应把它作为 `expected_revision`。`state` 与 `read-build` 的各准备范围状态同源
+（`control_view.authority_state`），并执行与派发相同的授权链检查；`dispatch_authority` 恒为 `false`，
+该视图不是验收，也不校验来源、检查器或文档字节。详见 [A3/A4 闭合边界](A3_A4_CLOSURE.md)。
 Review 摘要标明只读历史未重新检查文件，不将历史确认当成当前可执行判定。
 在途/未知尝试还提供宿主附件诊断；PID 存在不证明仍是原进程，PID 消失不证明没有副作用。
 `prepare` 的 Readback 绑定该次完整 Requirement/Plan、明确源文件读取、验收文件、

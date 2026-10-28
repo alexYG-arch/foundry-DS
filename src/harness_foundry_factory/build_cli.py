@@ -42,6 +42,9 @@ def main(argv=None):
         output.add_argument("--json", action="store_true")
         if name == "read-build":
             output.add_argument("--human", action="store_true", help="Show a read-only Chinese status summary")
+            command.add_argument("--control-view", action="store_true",
+                                 help="Revision-consistent control facts for one preparation; no source/proposal bodies")
+            command.add_argument("--prepared-event-id", help="Preparation to read with --control-view")
         if name in {"read-build", "read-history"}:
             command.add_argument("--program-id", required=True)
         elif name != "version":
@@ -75,6 +78,11 @@ def main(argv=None):
         elif args.command == "read-history":
             from .legacy_history import read_history
             result = read_history(args.database, args.program_id)
+        elif args.command == "read-build" and args.control_view:
+            if args.human:
+                raise RequestValidationError("--control-view returns machine facts; use --json, not --human")
+            from .build_entrypoint import read_build_control_view
+            result = read_build_control_view(args.control_db, args.program_id, args.prepared_event_id)
         elif args.command == "read-build":
             from .build_entrypoint import read_build
             result = read_build(args.control_db, args.program_id)
