@@ -67,10 +67,12 @@ class EgressProxyTests(unittest.TestCase):
         self.assertTrue(any(item.startswith("127.0.0.1:") for item in self.proxy.connections))
 
     def test_disallowed_host_is_denied(self):
-        opener = build_opener(ProxyHandler({"http": self.proxy.proxy_url}))
-        request = __import__("urllib.request", fromlist=["Request"]).Request("http://example.com/", method="GET")
-        with self.assertRaises(Exception):
-            opener.open(request, timeout=5)
+        import socket
+        proxy_host, proxy_port = self.proxy.proxy_url.rsplit("://", 1)[1].rsplit(":", 1)
+        with socket.create_connection((proxy_host, int(proxy_port)), timeout=10) as sock:
+            sock.sendall(b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+            response = sock.recv(1024)
+        self.assertTrue(response.startswith(b"HTTP/1.1 403"), response)
         self.assertTrue(self.proxy.blocked)
 
 

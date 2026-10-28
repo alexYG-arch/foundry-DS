@@ -960,6 +960,7 @@ class BuildResourceIntegrationTests(unittest.TestCase):
 
     def check_completed_resource_recovery(self, mode):
         fixture = self.fixture(mode)
+        fixture.scope["command_timeout_seconds"] = 30
         fixture.prepare()
         controller = fixture.controller()
         crashed_command = []
