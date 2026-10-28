@@ -198,6 +198,8 @@ def collect_files(source_root=ROOT):
             sources[relative] = relative
     sources.update({f"docs/{name}.md": f"docs/{name}.md" for name in DOCS})
     sources["docs/decisions/ADR-0004-CONTRACT-INDEPENDENCE.md"] = "docs/decisions/ADR-0004-CONTRACT-INDEPENDENCE.md"
+    # The roadmap and the adapter contract cite the single status source.
+    sources["docs/STATUS.json"] = "docs/STATUS.json"
     sources.update({f"examples/{name}": f"examples/{name}" for name in EXAMPLES})
     sources.update({"LICENSE": "LICENSE", "AGENTS.md": "resources/generic_release/AGENTS.md",
                     "examples/capability-adapters/README.md": "resources/generic_release/CAPABILITY_HELPERS.md",
