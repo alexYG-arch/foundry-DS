@@ -69,6 +69,7 @@ jobs:
           python -m unittest -v test_build_resources.BuildResourceIntegrationTests.test_local_tcp_capture_recovers_without_restarting_service_or_double_budget 2>&1 | tee /tmp/local-tcp.log
           tail -60 /tmp/local-tcp.log | while IFS= read -r line; do echo "::error title=Local TCP probe::$line"; done
           grep 'RECOVERY_RESULT=' /tmp/local-tcp.log | tail -1 | while IFS= read -r line; do echo "::error title=Recovery result::$line"; done
+          grep 'RECOVERY_DETAIL=' /tmp/local-tcp.log | tail -1 | while IFS= read -r line; do echo "::error title=Recovery detail::$line"; done
 
       - name: Annotate gate failure facts
         if: failure()
