@@ -1,4 +1,4 @@
-# Harness Foundry 1.0.0
+# Harness Foundry 1.0.1
 
 **用 DSH/DeepSeek 或兼容 agent 为项目搭建可继续使用、可检查、可修复的 Harness。**
 
@@ -14,14 +14,14 @@ Foundry 不是另一套模型，也不是固定行业流水线。宿主 agent（
 
 | 项目 | 状态 |
 |---|---|
-| 当前产品版本 | **1.0.0**；协议仍为 **2.9**；[发布说明](docs/releases/v1.0.0.md) |
-| 本 README 的累计升级范围 | 以历史 v0.5.0 为基线，涵盖 `fd6f8a5` 的 RSI 实现及后续文档更新；现纳入1.0.0发布及后续自检资源、测试和诊断修复 |
-| 当前默认分支 | `main`；由原 `codex/latest-r3-main-repairs-20261021` 更名；固定发行以 `v1.0.0` 标签为准 |
+| 当前产品版本 | **1.0.1**；协议仍为 **2.9**；[发布说明](docs/releases/v1.0.1.md) |
+| 本 README 的累计升级范围 | 以历史 v0.5.0 为基线，涵盖 `fd6f8a5` 的 RSI 实现、1.0.0 发布，以及 1.0.1 的 A3/A4 修复导入、控制视图和可靠性加固 |
+| 当前默认分支 | `main`；固定发行以 `v1.0.1` 标签为准 |
 | 旧主线历史 | `history/main-before-rsi-20261024`，保留旧 main 提交 `00348ca8` 及其历史；旧标签和 Release 不变 |
 | 历史稳定版下载 | [v0.5.0 Release](https://github.com/alexYG-arch/Harness_Foundry/releases/tag/v0.5.0)，2026-10-15 发布；原 tag 和附件保留 |
 | 协议与许可 | 协议 **2.9**；[MIT](LICENSE) |
 
-**当前产品版本为1.0.0。** 从 [v1.0.0 Release](https://github.com/alexYG-arch/Harness_Foundry/releases/tag/v1.0.0) 下载固定运行包及校验值。 历史 v0.5.0 下载包不包含下述新增能力；它的标签、Release 和原附件保留。使用时仍需记录 Git 提交、所用固定包和能力包版本，不能只看版本号。源码已修、固定包已包含、项目实际部署已升级是三个不同状态。
+**当前产品版本为1.0.1。** 本版接受 A3-read-v2 修复分支的完整导入，发布说明见 [v1.0.1](docs/releases/v1.0.1.md)。历史 v1.0.0、v0.5.0 的标签、Release 和原附件保留。使用时仍需记录 Git 提交、所用固定包和能力包版本，不能只看版本号。源码已修、固定包已包含、项目实际部署已升级是三个不同状态。
 
 ## 历史版本已有基础（v0.5.0）
 
@@ -32,7 +32,7 @@ Foundry 不是另一套模型，也不是固定行业流水线。宿主 agent（
 - 独立检查器与判定依赖使用受保护副本；测试凭据按需注入检查命令，日志和声明报告脱敏。
 - 报告归档、完成结果取回及资源清理；外层宿主 agent 核实额外问题后，沿已有受控返修与单次交回入口处理。
 
-历史发行范围见 [v0.5.0 发布说明](docs/releases/v0.5.0.md)。下文分别说明在此基础上新增的能力，以及修正的已有行为。
+历史发行范围见 [v0.5.0 发布说明](docs/releases/v0.5.0.md)。本页保留 1.0.0 的能力说明，并补充 1.0.1 的修复导入范围。
 
 ## 新增能力
 
@@ -142,7 +142,7 @@ Foundry 不是另一套模型，也不是固定行业流水线。宿主 agent（
 ### 选择当前源码或历史稳定版
 
 - **使用历史稳定版**：从 [v0.5.0 Release](https://github.com/alexYG-arch/Harness_Foundry/releases/tag/v0.5.0) 下载 `Harness-Foundry-0.5.0-generic.zip` 和 `SHA256SUMS`，保留隐藏的 `.agents/` 目录。它提供上述 v0.5.0 基础，不包含本分支新增项。
-- **使用1.0.0**：从 [v1.0.0 Release](https://github.com/alexYG-arch/Harness_Foundry/releases/tag/v1.0.0) 下载 `Harness-Foundry-1.0.0-generic.zip` 和 `SHA256SUMS`。维护源码时选取 `v1.0.0` 标签；记录实际提交和包身份。可选能力包从同标签的 `examples/capability-adapters/packages/` 按名称和版本选择，运行ZIP只含通用接入工具，不打包第三方SDK。
+- **使用1.0.1**：从 `v1.0.1` 标签取得固定源码，并校验本次发布的 `Harness-Foundry-1.0.1-generic.zip` 与 `SHA256SUMS`。记录实际提交和包身份。可选能力包从同标签的 `examples/capability-adapters/packages/` 按名称和版本选择，运行ZIP只含通用接入工具，不打包第三方SDK。`v1.0.0` 保留为历史版本。
 
 GitHub 自动生成的 Source code ZIP 是源码快照，不等于已验收的通用运行包。旧项目不会因源码分支更新自动升级，切换前应核对实际加载路径、固定版本、交付材料和已有控制记录。
 
@@ -207,9 +207,9 @@ python3 tools/hffactory.py --help
 
 ## 验证状态
 
-1.0.0包含已完成的RSI升级及近期最小修复：历史自检脚本提取为独立源码资源（生成字节不变）、含空格解释器路径及虚拟环境身份兼容、关键启动参数断言、dashboard第4版示例、历史reference标识、JSONL读取失败行号诊断，以及测试SQLite连接显式关闭。生产协议、预算和恢复语义不变。
+1.0.1 接受完整修复导入，包含 A3-read v2 的 `ControlViewV2`、dedup 事务/迁移修复、冷热路径 source body 点读、状态与文档单一来源，以及 Plan/Scope 1.3 机器保证。生产协议、预算、授权和恢复语义保持不变；活动 8.5GB 数据库迁移不在本版范围。
 
-最近一次完整回归为2180项：2123通过、57 SKIP、0失败/错误、0条SQLite连接警告；19项定向复验通过。默认跳过仍不计通过。此前同机另列57项隔离验证完成57/57（47原生、8历史兼容、2 pytest；零模型），仅支持所记录版本、环境及断言，不冒充本次发行包新增的真实模型或跨设备验证。发布阶段对最终源码进行受影响检查、远端CI及固定包隔离/下载复验，记录见[1.0.0发布说明](docs/releases/v1.0.0.md)。各组测试有重叠，不相加。
+本次发布前门禁（macOS，Python 3.12.13）：`SOURCE_CHECKS_PASS`，1012/1012 通过，81 个必需模块，0 skip、0 failure、0 error。该门禁是发布所需公开集合，不等同于完整原生模型、目标项目或跨平台验收；未执行项保留为 NOT_RUN。记录见[1.0.1发布说明](docs/releases/v1.0.1.md)和 `docs/STATUS.json`。
 
 ### RSI 升级与当前分支
 
