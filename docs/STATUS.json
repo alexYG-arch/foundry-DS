@@ -36,14 +36,14 @@
       "linux": []
     },
     "last_local_result": {
-      "platform_set": "linux",
-      "discovered": 1005,
-      "passed": 1005,
+      "platform_set": "darwin",
+      "discovered": 1012,
+      "passed": 1012,
       "skipped": 0,
       "failed": 0,
       "status": "SOURCE_CHECKS_PASS",
-      "measured_on": "2026-10-28 after WP0-WP8 (branch cursor/foundry-ds-a3-repair-24ef)",
-      "note": "before the platform split: 963 discovered / 950 passed / 6 skipped / 7 failed on Linux; after WP4+WP6: 976 / 976 / 0 / 0"
+      "measured_on": "2026-10-28",
+      "note": "measured on macOS with Python 3.12.13 after WP0-WP8; verifier index and status source are in the gate set"
     }
   },
   "control_store": {
