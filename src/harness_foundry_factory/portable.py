@@ -55,6 +55,10 @@ ALLOWED_TOP_LEVEL_FILES = (
     "docs/ACCEPTANCE_CONTRACT_ALIGNMENT.md",
     "docs/FOUNDRY_UPGRADE_2026_10_10.md",
     "docs/CLEAR_COMMUNICATION.md",
+    # read-build --control-view is documented in the CLI guide and bounded here.
+    "docs/A3_A4_CLOSURE.md",
+    # The runtime contract cites the independence baseline decision.
+    "docs/decisions/ADR-0004-CONTRACT-INDEPENDENCE.md",
     "pyproject.toml",
 )
 ALLOWED_TREES = (

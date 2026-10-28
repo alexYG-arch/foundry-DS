@@ -775,7 +775,7 @@ effects 观察已声明写根和具名保留文件，allowed 是精确允许变�
 
 - `review`：`policy: SAME_SCOPE_CHECKER_CORRECTION_V1`，`actor: {type: TRUSTED_CODEX_HOST, chat_thread_id, turn_id}`，非空 `reason`、`evidence_refs`，`decision: EQUIVALENT_CHECKER_CORRECTION`。
 - `source_prepared_event_id`、原样读回的 `old_verifier_files`、`new_verifier_files`，以及完整 `preserved_case_ids`。
-- `changed_files`：每个实际变化的检查适配文件对应 `{role: CHECKER_ADAPTER, reason: 具体修正理由}`；包含必要代码依赖。改答案、删断言或改业务判定不能伪称适配修正，须回原决定流程。
+- `changed_files`：每个实际变化的检查适配文件对应 `{role: CHECKER_ADAPTER, reason: 具体修正理由}`；包含必要代码依赖。变化集合按两个准备范围的 `verifier_tree`（整个检查器目录的文件清单，`read-build` 的 `verification_tree_files` / `verifier_tree`）与 `verifier_files` 的并集比较，未被命令引用的辅助模块、fixture 和 expected 数据同样必须逐个列出；没有 `verifier_tree` 的历史准备范围只比较 `verifier_files`。改答案、删断言或改业务判定不能伪称适配修正，须回原决定流程。
 - `completed_attempts`：一般接受／待复验复用可为空对象；尚未接受的原生产者按 attempt ID 列出 `artifacts` 和 `effects`。effects 含 `status: EFFECTS_RECONCILED`、完整 `command_ids`、`detail`、`evidence_refs`。宿主须核实实际效果，文件未变或进程消失不代替此事实。
 
 新绑定仅继承仍有效的原真实批准，保留原生产目标、公开来源、断言、工具与服务、读写域、预算和绝对有效期。新检查有独立子 attempt，记录 `SAME_SCOPE_CHECKER_REVERIFY_V1`、原生产身份和本次检查器；只检查当前绑定产物，不重放实施。原失败保持，真实检查通过后才接受。新路径不新增生产消耗，但所有检查命令与耗时仍记录；旧版本复验已耗次数不退回。普通新人工重新绑定仍保留原计数语义。

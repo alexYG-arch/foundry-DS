@@ -278,8 +278,11 @@ class RSIReviewControllerTests(unittest.TestCase):
                         'reason':'TEST adapter-only correction, same report assertion','evidence_refs':['TEST checker diff'],'decision':'EQUIVALENT_CHECKER_CORRECTION'},
                 'source_prepared_event_id':previous,'old_verifier_files':old['verifier_files'],'new_verifier_files':current['verifier_files'],
                 'preserved_case_ids':['REVIEW-REPORT-CONTRACT'],'changed_files':{
-                    name:{'role':'CHECKER_ADAPTER','reason':'TEST corrected adapter'} for name in old['verifier_files'].keys()|current['verifier_files'].keys()
-                    if old['verifier_files'].get(name)!=current['verifier_files'].get(name)},'completed_attempts':complete}
+                    # The host reviews every changed file in the bound checker directory
+                    # (helpers and fixtures included), not only the referenced checker.
+                    name:{'role':'CHECKER_ADAPTER','reason':'TEST corrected adapter'} for name in
+                    {**old.get('verifier_tree',{}),**old['verifier_files']}.keys()|{**current.get('verifier_tree',{}),**current['verifier_files']}.keys()
+                    if {**old.get('verifier_tree',{}),**old['verifier_files']}.get(name)!={**current.get('verifier_tree',{}),**current['verifier_files']}.get(name)},'completed_attempts':complete}
             derive_checker_authorization(f.store,f.program,new,evidence=evidence,**f.kwargs('review-derive-'+str(n)))
             result=f.controller().advance(new,advance_mode='ONE_ATTEMPT')
             self.assertEqual(result['attempt_status'],'ACCEPTED',result)

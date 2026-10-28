@@ -123,7 +123,10 @@ def _scope_readback(event, events, store=None, program_id=None):
             "requirement_ir": proposal["payload"]["requirement_ir"], "plan": proposal["payload"]["plan"],
             "scope": payload["scope"], "source_binding": _source_summary(source),
             **({"model_defaults_source": payload["model_defaults_source"]} if "model_defaults_source" in payload else {}),
-            "verification_files": sorted(payload["verifier_files"]), "state": state, **authority,
+            "verification_files": sorted(payload["verifier_files"]),
+            # The whole bound checker directory; same-scope corrections review changes against it.
+            "verification_tree_files": sorted(payload.get("verifier_tree", payload["verifier_files"])),
+            "verifier_tree": payload.get("verifier_tree"), "state": state, **authority,
             **({"verifier_source": payload["verifier_source"]} if "verifier_source" in payload else {}),
             "coding_instruction_preflight": payload.get("coding_instruction_preflight"),
             "acceptance_contracts": payload.get("acceptance_contracts"),
