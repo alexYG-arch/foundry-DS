@@ -88,7 +88,8 @@ def reconcile_build_observations(store, program_id, prepared_event_id, *, expect
                 or canonical_json(replay[-1]["payload"].get("request")) != canonical_json(request)):
             raise IdempotencyConflictError("observation reconciliation key was reused with different content")
         return replay[-1]
-    events = store.list_events(program_id)
+    from .build_runtime import control_events
+    events = control_events(store, program_id)
     if len(events) != expected_revision:
         raise RevisionConflictError("re-read current build progress before reconciling observations")
     _require(any(row["event_id"] == prepared_event_id and row["event_type"] == "BUILD_AUTHORIZATION_PREPARED"

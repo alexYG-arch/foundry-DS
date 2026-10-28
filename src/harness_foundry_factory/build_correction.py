@@ -231,7 +231,7 @@ def completed_implementation_candidates(events, previous_id, receipts):
     return candidates
 
 
-def _same_scope(events, previous, prepared, proposal):
+def _same_scope(events, previous, prepared, proposal, snapshot_loader=None):
     old_proposal = _event(events, previous["proposal_event_id"], "BUILD_PLAN_PROPOSED")["payload"]
     require(proposal["requirement_ir"] == old_proposal["requirement_ir"]
             and proposal["document_review"] == old_proposal["document_review"]
@@ -247,14 +247,19 @@ def _same_scope(events, previous, prepared, proposal):
     require(old_scope == new_scope, "same-scope correction cannot change execution, resources, budgets or expiry")
     old_source = _event(events, previous["source_event_id"], "BUILD_SOURCES_CAPTURED")["payload"]
     new_source = _event(events, prepared["source_event_id"], "BUILD_SOURCES_CAPTURED")["payload"]
-    require(all(old_source[k] == new_source[k] for k in ("source_root", "manifest", "snapshot")),
+    require(all(old_source[k] == new_source[k] for k in ("source_root", "manifest")),
             "correction cannot replace original requirement sources")
+    if snapshot_loader is not None:
+        same_snapshot = snapshot_loader(previous["source_event_id"]) == snapshot_loader(prepared["source_event_id"])
+    else:
+        same_snapshot = old_source["snapshot"] == new_source["snapshot"]
+    require(same_snapshot, "correction cannot replace original requirement sources")
     before = {t["workpack_id"]: t for t in old_proposal["plan"]["workpacks"]}
     after = {t["workpack_id"]: t for t in proposal["plan"]["workpacks"]}
     require(before.keys() == after.keys(), "same-scope correction keeps task identities")
     for key in before:
-        require(_production_signature(events, old_proposal, previous, before[key]) ==
-                _production_signature(events, proposal, prepared, after[key]),
+        require(_production_signature(events, old_proposal, previous, before[key], snapshot_loader) ==
+                _production_signature(events, proposal, prepared, after[key], snapshot_loader),
                 "same-scope correction cannot change production or its input semantics")
         old_cases = {c["case_id"]:{k:v for k,v in c.items() if k != "argv"} for c in before[key]["verification"]}
         new_cases = {c["case_id"]:{k:v for k,v in c.items() if k != "argv"} for c in after[key]["verification"]}
@@ -270,9 +275,11 @@ def derive_checker_authorization(store, program_id, prepared_id, *, evidence,
         if replay[0]["payload"].get("correction_request") != request:
             raise IdempotencyConflictError("correction key reused with different content")
         return replay[0]
-    events = store.list_events(program_id)
+    from .build_runtime import control_events, snapshot_loader as _snapshot_loader
+    events = control_events(store, program_id)
     if len(events) != expected_revision:
         raise RevisionConflictError("re-read current scope before correction")
+    loader = _snapshot_loader(store, program_id)
     prepared_event = _event(events, prepared_id, "BUILD_AUTHORIZATION_PREPARED")
     prepared = prepared_event["payload"]
     previous_id = prepared.get("rebind_from")
@@ -288,7 +295,7 @@ def derive_checker_authorization(store, program_id, prepared_id, *, evidence,
             "correction proposal is no longer current")
     require(_utc(prepared_event["created_at"]) <= _utc(created_at) < _utc(prepared["scope"]["expires_at"]),
             "correction must follow preparation within original validity")
-    _same_scope(events, previous, prepared, proposal_event["payload"])
+    _same_scope(events, previous, prepared, proposal_event["payload"], loader)
     require(isinstance(evidence, dict) and set(evidence) == {
                 "review", "source_prepared_event_id", "old_verifier_files", "new_verifier_files",
                 "preserved_case_ids", "changed_files", "completed_attempts"}, "bind exact old/new checkers and original assertion review")
@@ -299,8 +306,11 @@ def derive_checker_authorization(store, program_id, prepared_id, *, evidence,
     cases = [c["case_id"] for t in proposal_event["payload"]["plan"]["workpacks"] for c in t["verification"]]
     require(isinstance(evidence["preserved_case_ids"], list)
             and sorted(evidence["preserved_case_ids"]) == sorted(cases), "every original independent assertion must be reviewed")
-    changes = {name for name in previous["verifier_files"].keys() | prepared["verifier_files"].keys()
-               if previous["verifier_files"].get(name) != prepared["verifier_files"].get(name)}
+    # Review covers the whole bound checker directory (helpers and fixtures
+    # included), not only the files the checks reference by name.
+    old_files = {**previous.get("verifier_tree", {}), **previous["verifier_files"]}
+    new_files = {**prepared.get("verifier_tree", {}), **prepared["verifier_files"]}
+    changes = {name for name in old_files.keys() | new_files.keys() if old_files.get(name) != new_files.get(name)}
     require(isinstance(evidence["changed_files"], dict) and set(evidence["changed_files"]) == changes,
             "review every changed checker file, including declared helpers")
     for detail in evidence["changed_files"].values():
@@ -315,7 +325,8 @@ def derive_checker_authorization(store, program_id, prepared_id, *, evidence,
             require(file_identity(relative_path(Path(binding["scope"]["verification_root"]), name)) == identity,
                     "old or corrected checker bytes changed after preparation")
     candidates = completed_implementation_candidates(events, previous_id, evidence["completed_attempts"])
-    rebind = approval_rebind(events, previous_id, prepared, proposal_event["payload"], extra_candidates=candidates)
+    rebind = approval_rebind(events, previous_id, prepared, proposal_event["payload"], extra_candidates=candidates,
+                             snapshot_loader=loader)
     for record in rebind["verification_pending"].values():
         record.update(reverify_kind=REVERIFY_KIND, production_budget_charge=0)
     source = [e for e in events if e["event_type"] == "BUILD_AUTHORIZATION_APPROVED"

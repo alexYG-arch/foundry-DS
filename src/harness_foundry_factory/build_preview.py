@@ -203,7 +203,7 @@ def materialize_build_preview(request, control_db, *, clock=None):
         if prior:
             _require(len(prior) == 1 and prior[0]["event_type"] == kind, "unexpected materialization record")
             return prior[0]
-        return operation({"expected_revision": len(store.list_events(program)),
+        return operation({"expected_revision": store.event_count(program),
                           "idempotency_key": key + ":" + suffix, "created_at": now()})
     proposal = step("proposal", "BUILD_PLAN_PROPOSED", lambda kw: record_build_plan_proposal(store,
         preview["request"]["requirement_ir"], preview["request"]["plan"], document_review=review, **kw))

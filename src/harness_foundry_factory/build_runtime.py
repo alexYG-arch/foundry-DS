@@ -114,6 +114,30 @@ def _event(events, event_id, kind):
     return found
 
 
+# The one payload family whose body dominates a control store. Stream reads
+# drop it inside SQLite; the single body a decision needs is read by event ID.
+SOURCE_BODY_ELISION = {"BUILD_SOURCES_CAPTURED": ("snapshot",)}
+
+
+def control_events(store, program_id):
+    """The complete, ordered stream for revision arithmetic and projections,
+    with source bodies elided (see ``SOURCE_BODY_ELISION``)."""
+    return store.list_events(program_id, elide=SOURCE_BODY_ELISION)
+
+
+def snapshot_loader(store, program_id):
+    """Loader for helpers that compare source snapshots over an elided stream."""
+    return lambda event_id: source_payload(store, program_id, event_id)["snapshot"]
+
+
+def source_payload(store, program_id, source_event_id):
+    """One source capture, body included, by event identity."""
+    event = store.get_event(program_id, source_event_id) if isinstance(source_event_id, str) else None
+    _check(event is not None and event["event_type"] == "BUILD_SOURCES_CAPTURED",
+           "missing BUILD_SOURCES_CAPTURED event in this Program")
+    return event["payload"]
+
+
 def _local_argv(argv, scope):
     """Hydrate explicit tool references without guessing PATH or rewriting venvs."""
     _check(bool(argv) and argv[0] in scope["executables"], "local executable is not declared")
@@ -449,8 +473,8 @@ def prepare_build_authorization(store, program_id, proposal_event_id, source_eve
                     or replay[0]["payload"].get("resource_prepare_request") != resource_request):
                 raise IdempotencyConflictError("resource preparation key was reused with different content")
             return replay[0]
-    events = store.list_events(program_id)
-    source = _event(events, source_event_id, "BUILD_SOURCES_CAPTURED")
+    events = control_events(store, program_id)
+    source = {"payload": source_payload(store, program_id, source_event_id)}
     _check(source["payload"]["proposal_event_id"] == proposal_event_id, "sources belong to another proposal")
     ir, plan = proposal["payload"]["requirement_ir"], proposal["payload"]["plan"]
     review = validate_build_review(proposal["payload"].get("document_review"))
@@ -480,7 +504,7 @@ def approve_build_authorization(store, program_id, prepared_event_id, *, human_m
     cannot write the controller DB.
     """
     _require_revision_store(store)
-    events = store.list_events(program_id)
+    events = control_events(store, program_id)
     prepared = _event(events, prepared_event_id, "BUILD_AUTHORIZATION_PREPARED")
     _check(isinstance(human_message_ref, str) and bool(human_message_ref.strip()), "human approval reference is required")
     _check(_utc(prepared["created_at"]) <= _utc(created_at) < _utc(prepared["payload"]["scope"]["expires_at"]),
@@ -488,7 +512,7 @@ def approve_build_authorization(store, program_id, prepared_event_id, *, human_m
     latest = _proposal_event(store, program_id, None)
     validate_build_review(latest["payload"].get("document_review"))
     _check(latest["event_id"] == prepared["payload"]["proposal_event_id"], "proposal changed before approval")
-    source = _event(events, prepared["payload"]["source_event_id"], "BUILD_SOURCES_CAPTURED")["payload"]
+    source = source_payload(store, program_id, prepared["payload"]["source_event_id"])
     _check_native_layout(store, prepared["payload"]["scope"], source)
     contracts = validate_acceptance_contracts(latest["payload"]["requirement_ir"],
                                              snapshot=source["snapshot"], required=True)
@@ -510,7 +534,8 @@ def approve_build_authorization(store, program_id, prepared_event_id, *, human_m
         _check(not any(e["event_type"] == "BUILD_AUTHORIZATION_APPROVED"
                        and e["payload"]["prepared_event_id"] == prepared_event_id for e in events),
                "rebind approval already committed; read its existing result")
-        extra["rebind"] = approval_rebind(events, prepared["payload"]["rebind_from"], prepared["payload"], latest["payload"])
+        extra["rebind"] = approval_rebind(events, prepared["payload"]["rebind_from"], prepared["payload"], latest["payload"],
+                                          snapshot_loader=snapshot_loader(store, program_id))
     return store.append_batch(program_id, [{"event_type": "BUILD_AUTHORIZATION_APPROVED", "payload": {
         "prepared_event_id": prepared_event_id, "human_message_ref": human_message_ref, **extra}}],
         expected_revision=expected_revision, idempotency_key=idempotency_key, created_at=created_at)[0]
@@ -519,7 +544,7 @@ def approve_build_authorization(store, program_id, prepared_event_id, *, human_m
 def revoke_build_authorization(store, program_id, prepared_event_id, *, expected_revision, idempotency_key, created_at,
                                human_message_ref=None, reason=None):
     _require_revision_store(store)
-    _event(store.list_events(program_id), prepared_event_id, "BUILD_AUTHORIZATION_PREPARED")
+    _event(control_events(store, program_id), prepared_event_id, "BUILD_AUTHORIZATION_PREPARED")
     return store.append_batch(program_id, [{"event_type": "BUILD_AUTHORIZATION_REVOKED", "payload": {
         "prepared_event_id": prepared_event_id,
         **({"human_message_ref": human_message_ref, "reason": reason} if human_message_ref is not None else {})}}],
@@ -573,7 +598,7 @@ def resolve_build_attempt(store, program_id, prepared_event_id, attempt_id, *, r
     """
     _check(isinstance(reason, str) and reason.strip(), "effect reconciliation reason is required")
     _check(isinstance(human_message_ref, str) and human_message_ref.strip(), "actual human reconciliation is required")
-    events = store.list_events(program_id)
+    events = control_events(store, program_id)
     _event(events, prepared_event_id, "BUILD_AUTHORIZATION_PREPARED")
     replay = store.idempotent_events(program_id, idempotency_key)
     if replay is not None:
@@ -680,6 +705,10 @@ class BuildController:
         return self.store.append_batch(self.program_id, [{"event_type": kind, "payload": payload}],
             expected_revision=revision, idempotency_key=key, created_at=self.clock().isoformat(), require_new=True)[0]
 
+    def _events(self):
+        """The complete stream for CAS arithmetic and projections, source bodies elided."""
+        return control_events(self.store, self.program_id)
+
     def control_view(self, prepared_id):
         """Revision-consistent control facts; no source/proposal bodies (see control_view.py)."""
         from .control_view import build_control_view
@@ -689,7 +718,7 @@ class BuildController:
     control_snapshot = control_view
 
     def _current(self, prepared_id, *, check_content=True):
-        events = self.store.list_events(self.program_id)
+        events = self._events()
         prepared = deepcopy(_event(events, prepared_id, "BUILD_AUTHORIZATION_PREPARED")["payload"])
         prepared["prepared_event_id"] = prepared_id
         approved = any(e["event_type"] == "BUILD_AUTHORIZATION_APPROVED" and e["payload"]["prepared_event_id"] == prepared_id
@@ -729,7 +758,7 @@ class BuildController:
                        "replanned local executable is outside approval")
                 _local_argv(task["local_argv"], prepared["scope"])
         prepared["proposal_event_id"] = proposal["event_id"]
-        source = _event(events, prepared["source_event_id"], "BUILD_SOURCES_CAPTURED")["payload"]
+        source = source_payload(self.store, self.program_id, prepared["source_event_id"])
         _check_native_layout(self.store, prepared["scope"], source)
         # Old scopes remain readable, but cannot dispatch under an implicit
         # acceptance basis. A new preparation does not inherit old approval.
@@ -905,7 +934,7 @@ class BuildController:
                            runtime_authorization=runtime_authorization)
             # Prompt construction is not process startup or behavioral acceptance.
             # execution_started and behavior_verified retain their false values.
-        events = self.store.list_events(self.program_id)
+        events = self._events()
         attempts, accepted = self._state(events, prepared["prepared_event_id"])
         plan = _proposal_event(self.store, self.program_id, prepared["proposal_event_id"])["payload"]["plan"]
         superseded = self._superseded_artifacts(plan, project_budget_attempts(events, prepared["prepared_event_id"]))
@@ -953,7 +982,7 @@ class BuildController:
         context["budget_consumed"] = {"attempts": len(charged_attempts), "task_attempts": sum(
             bool(set(row.get("budget_workpack_ids", [row["workpack_id"]])) & set(prepared["task_budget_owners"][task["workpack_id"]]))
             for row in charged_attempts), "reset": False}
-        source = _event(events, prepared["source_event_id"], "BUILD_SOURCES_CAPTURED")["payload"]
+        source = source_payload(self.store, self.program_id, prepared["source_event_id"])
         # Complete source bytes remain in the store and in these explicit
         # read-only files. Do not inline a multi-megabyte PRD into every model
         # prompt or silently truncate it to the current Atom excerpts.
@@ -1212,7 +1241,7 @@ class BuildController:
                            "service and preserve cumulative usage; existing observations remain recoverable")
                 attempt_id = self._attempt(prepared_id, task, prepared, events, feedback,
                                            codex_handoff=codex_handoff, reverify=reverify)
-                rows = self.store.list_events(self.program_id)
+                rows = self._events()
                 attempts, accepted = self._state(rows, prepared_id)
                 if (advance_mode == "ONE_ATTEMPT"
                         or attempts[attempt_id].get("failure_domain") == "EFFECTS_PREPARATION"):
@@ -1310,7 +1339,7 @@ class BuildController:
                     status = self._verification_status(verification)
                     if status in {"ACCEPTED", "REJECTED"}:
                         self._check_product_copy_sources(workspace, (
-                            row["payload"] for row in self.store.list_events(self.program_id)
+                            row["payload"] for row in self._events()
                             if row["event_type"] == "BUILD_COMMAND_OBSERVED"
                             and row["payload"].get("attempt_id") == attempt_id))
             elif implementation.get("status") in {"VALIDATION_FAILED", "MODEL_PROCESS_FAILED"}:
@@ -1332,7 +1361,7 @@ class BuildController:
             verification.append({"diagnostic": str(exc)})
             status = "UNKNOWN_SIDE_EFFECT"
             if preparing_effects:
-                rows = self.store.list_events(self.program_id)
+                rows = self._events()
                 attempts, _ = self._state(rows, prepared_id)
                 if len(rows) == revision and self._no_command_intent(rows, prepared_id, attempts[attempt_id]):
                     status = "NOT_DISPATCHED"
@@ -1345,7 +1374,7 @@ class BuildController:
             # The old dispatcher's stale exception is not a new outcome and
             # cannot overwrite that decision or invalidate a newer acceptance.
             for _ in range(3):
-                rows = self.store.list_events(self.program_id)
+                rows = self._events()
                 attempts, _ = self._state(rows, prepared_id)
                 if attempts[attempt_id]["status"] != "IN_FLIGHT":
                     return attempt_id
@@ -1377,7 +1406,7 @@ class BuildController:
             identity = {**binding, "program_id": self.program_id, "command_id": command_id,
                         "case_id": invocation["case_id"]}
             checked_artifacts = next((row["payload"]["artifacts"]
-                for row in reversed(self.store.list_events(self.program_id))
+                for row in reversed(self._events())
                 if row["event_type"] == "BUILD_VERIFICATION_INPUTS"
                 and row["payload"].get("attempt_id") == binding["attempt_id"]), {})
             invocation, preparation_failure = prepare_resource_invocation(
@@ -1461,7 +1490,7 @@ class BuildController:
         # Recording a completed effect is not a new permission. Retain it even
         # if authority was revoked while the finite process was running.
         for _ in range(3):
-            events = self.store.list_events(self.program_id)
+            events = self._events()
             existing = [row for row in events if row["event_type"] == kind
                         and row["payload"].get("command_id") == payload["command_id"]]
             if existing:

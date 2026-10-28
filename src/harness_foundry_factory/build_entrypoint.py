@@ -15,7 +15,7 @@ from .build_state import attempt_budget, project_readback_attempts, project_budg
 from .build_rebind import reverification_candidates
 from .build_review import validate_build_review, validate_review_sources, review_summary
 from .build_runtime import (
-    BuildController, approve_build_authorization, prepare_build_authorization,
+    BuildController, approve_build_authorization, control_events, prepare_build_authorization,
     record_source_snapshot, revoke_build_authorization,
     resolve_build_attempt,
 )
@@ -91,7 +91,7 @@ def _source_summary(event):
             "semantic_completeness_verified": False}
 
 
-def _scope_readback(event, events):
+def _scope_readback(event, events, store=None, program_id=None):
     payload = event["payload"]
     prepared_id = event["event_id"]
     # One state vocabulary for readback, the control view and dispatch.
@@ -102,6 +102,8 @@ def _scope_readback(event, events):
     authority = {key: facts[key] for key in ("approval_basis", "derived_authority", "authority_unavailable_reason",
                                              "authority_unavailable_message") if key in facts}
     source = next(row for row in events if row["event_id"] == payload["source_event_id"])
+    if "elided_fields" in source["payload"] and store is not None:
+        source = store.get_event(program_id, source["event_id"])   # body needed for the source summary only
     proposal = next(row for row in events if row["event_id"] == payload["proposal_event_id"])
     attempts = [row["payload"] for row in events if row["event_type"] == "BUILD_ATTEMPT_STARTED"
                 and row["payload"]["prepared_event_id"] == prepared_id]
@@ -150,7 +152,7 @@ def read_build(control_db, program_id):
     """Read persisted declarations and progress without creating a database."""
     program_id = _program(program_id)
     store = _open_store(_database(control_db), read_only=True)
-    events = store.list_events(program_id)
+    events = control_events(store, program_id)
     if events and all(row["event_type"] == "BUILD_PREVIEW_CONFIRMED" for row in events):
         # A crash may follow the durable human confirmation but precede the
         # first proposal. Read that capture without inventing a runnable Plan,
@@ -176,8 +178,10 @@ def read_build(control_db, program_id):
             "document_review": review_summary(latest_proposal["payload"].get("document_review")),
             "confirmed_previews": [{"event_id": row["event_id"], **row["payload"]}
                                    for row in events if row["event_type"] == "BUILD_PREVIEW_CONFIRMED"],
-            "sources": [_source_summary(row) for row in events if row["event_type"] == "BUILD_SOURCES_CAPTURED"],
-            "authorizations": [_scope_readback(row, events) for row in events if row["event_type"] == "BUILD_AUTHORIZATION_PREPARED"],
+            "sources": [_source_summary(store.get_event(program_id, row["event_id"]))
+                        for row in events if row["event_type"] == "BUILD_SOURCES_CAPTURED"],
+            "authorizations": [_scope_readback(row, events, store, program_id)
+                               for row in events if row["event_type"] == "BUILD_AUTHORIZATION_PREPARED"],
             "attempts": list(attempts.values()),
             "repair_requests": [{"event_id": row["event_id"], **row["payload"]} for row in events
                                 if row["event_type"] == "BUILD_ACCEPTANCE_INVALIDATED"
@@ -250,7 +254,7 @@ def apply_build_request(command, request, control_db):
     if database.exists():
         existing = _open_store(database, read_only=True)
         _require(set(existing.list_program_ids()) <= {program}, "controller belongs to another Program")
-        if command == "advance-build" and len(existing.list_events(program)) != request["expected_revision"]:
+        if command == "advance-build" and existing.event_count(program) != request["expected_revision"]:
             raise RevisionConflictError("re-read current build progress before dispatch")
     store = _open_store(database)
     if command == "advance-build":
@@ -261,12 +265,12 @@ def apply_build_request(command, request, control_db):
         if isinstance(plan, dict) and plan.get("schema_version") == "1.3":
             from .agents.agent_controller import AgentBuildController
             return {**AgentBuildController(store, program).advance(request["prepared_event_id"]),
-                    "program_id": program, "stream_revision": len(store.list_events(program)),
+                    "program_id": program, "stream_revision": store.event_count(program),
                     "harness_e2e_verified": False}
         return {**BuildController(store, program).advance(
                     request["prepared_event_id"], advance_mode=request.get("advance_mode", "CONTINUOUS"),
                     codex_handoff=request.get("codex_handoff")),
-                "program_id": program, "stream_revision": len(store.list_events(program)), "harness_e2e_verified": False}
+                "program_id": program, "stream_revision": store.event_count(program), "harness_e2e_verified": False}
     kwargs = {"expected_revision": request["expected_revision"], "idempotency_key": request["idempotency_key"],
               "created_at": datetime.now(timezone.utc).isoformat()}
     if command == "record-build-plan":
@@ -325,7 +329,7 @@ def apply_build_request(command, request, control_db):
         event = reassess_build_attempt(BuildController(store, program), request["prepared_event_id"],
             request["attempt_id"], evidence=request["evidence"], human_message_ref=human_ref, **kwargs)
         return {"status": "BUILD_REASSESSMENT_RECORDED_NOT_ACCEPTED", "program_id": program,
-                "event_id": event["event_id"], "stream_revision": len(store.list_events(program)),
+                "event_id": event["event_id"], "stream_revision": store.event_count(program),
                 "prepared_event_id": request["prepared_event_id"], "attempt_id": request["attempt_id"],
                 "control_state_write": True, "target_write": False, "execution_started": False,
                 "budget_reset": False, "old_output_accepted": False, "harness_e2e_verified": False}
@@ -339,5 +343,5 @@ def apply_build_request(command, request, control_db):
                                            reason=request["reason"], **kwargs)
         status = "BUILD_AUTHORIZATION_REVOKED"
     return {"status": status, "program_id": program, "event_id": event["event_id"], "stream_revision": event["stream_revision"],
-            "readback": _scope_readback(event, store.list_events(program)) if command == "prepare-build-authorization" else None,
+            "readback": _scope_readback(event, control_events(store, program), store, program) if command == "prepare-build-authorization" else None,
             "control_state_write": True, "target_write": False, "execution_started": False, "harness_e2e_verified": False}

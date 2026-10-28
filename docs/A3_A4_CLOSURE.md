@@ -29,6 +29,23 @@ What it does not do: it is not acceptance, it does not validate source bytes,
 verifier bytes or review documents, and it does not replace `_current`.
 `control_snapshot` (v1) is now the same projection.
 
+## A3-read: the hot paths
+
+The store problem was never the number of events but the bytes of
+`BUILD_SOURCES_CAPTURED` bodies parsed on every decision. The controller's
+stream reads (`_current`, `advance`, approval, preparation, correction,
+reconciliation, `read-build`) now use `control_events()`: the complete ordered
+stream — revision arithmetic, projections and command scans are unchanged —
+with the `snapshot` body removed inside SQLite (`json_remove`) and marked
+`elided_fields: ["snapshot"]`. The single capture a decision needs is read by
+event ID (`source_payload`). `_proposal_event(None)` is a typed read.
+`len(store.list_events())` counters are `event_count()`.
+
+`tools/index_store_event_type.py DB` adds the index
+`(program_id, event_type, stream_revision)` offline and idempotently; the store
+never creates it on open. Typed reads (`list_events_by_types`, the control
+view) use it; the exact-schema guard is unaffected.
+
 ## A3-write
 
 Source dedup is an explicit format (`REVISION_V1_DEDUP`). Within the same

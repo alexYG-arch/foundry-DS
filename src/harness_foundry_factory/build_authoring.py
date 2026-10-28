@@ -73,7 +73,7 @@ def _proposal_event(store: ControlEventStore, program_id: str, event_id: str | N
         if event is None or event["event_type"] != PROPOSAL_EVENT:
             raise RequestValidationError("build proposal does not exist for this Program and event")
         return event
-    events = [event for event in store.list_events(program_id) if event["event_type"] == PROPOSAL_EVENT]
+    events = store.list_events_by_types(program_id, (PROPOSAL_EVENT,))
     if not events:
         raise RequestValidationError("build proposal does not exist for this Program and event")
     return events[-1]

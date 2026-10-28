@@ -266,8 +266,8 @@ class DedupRevisionControlEventStore(RevisionControlEventStore):
 
     _idempotent_events = idempotent_events
 
-    def list_events(self, program_id):
-        events = super().list_events(program_id)
+    def list_events(self, program_id, **kwargs):
+        events = super().list_events(program_id, **kwargs)
         with self._connection() as connection:
             return [{**event, "payload": self._hydrate(event["payload"], connection)} for event in events]
 

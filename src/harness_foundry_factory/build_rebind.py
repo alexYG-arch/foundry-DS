@@ -54,12 +54,25 @@ def validate_rebind(events, previous_id, proposal, scope):
     return old
 
 
-def _production_signature(events, proposal, prepared, task):
+def _snapshot(events, prepared, snapshot_loader):
+    """The source snapshot a preparation was bound to.
+
+    Streams read with source bodies elided must supply ``snapshot_loader``
+    (event ID -> snapshot); full streams can still resolve it in place.
+    """
+    if snapshot_loader is not None:
+        return snapshot_loader(prepared["source_event_id"])
+    payload = _event(events, prepared["source_event_id"], "BUILD_SOURCES_CAPTURED")["payload"]
+    _require("snapshot" in payload, "source body was elided from this stream; pass snapshot_loader")
+    return payload["snapshot"]
+
+
+def _production_signature(events, proposal, prepared, task, snapshot_loader=None):
     public = deepcopy(task)
     public.pop("verification")
     atoms = [a for a in proposal["requirement_ir"]["atoms"] if a["atom_id"] in task["atom_ids"]]
     source_ids = {a["source_id"] for a in atoms} | {i["id"] for i in task["inputs"] if i["kind"] == "SOURCE"}
-    snapshot = _event(events, prepared["source_event_id"], "BUILD_SOURCES_CAPTURED")["payload"]["snapshot"]
+    snapshot = _snapshot(events, prepared, snapshot_loader)
     sources = [s for s in snapshot["sources"] if s["source_id"] in source_ids]
     contracts = sorted({canonical_json(prepared["acceptance_contracts"][c["case_id"]]) for c in task["verification"]})
     return public, atoms, sources, contracts
@@ -80,7 +93,7 @@ def _check_signature(prepared, task):
             scope["source_read_roots"], {r: profiles[r] for r in refs})
 
 
-def approval_rebind(events, previous_id, new_prepared, new_proposal, *, extra_candidates=None):
+def approval_rebind(events, previous_id, new_prepared, new_proposal, *, extra_candidates=None, snapshot_loader=None):
     """Freeze a current qualification at the approval CAS; no command executes."""
     old = validate_rebind(events, previous_id, new_proposal, new_prepared["scope"])
     lineage = prepared_lineage(events, previous_id)
@@ -102,7 +115,8 @@ def approval_rebind(events, previous_id, new_prepared, new_proposal, *, extra_ca
         used = _event(events, record["proposal_event_id"], "BUILD_PLAN_PROPOSED")["payload"]
         task = next(t for t in used["plan"]["workpacks"] if t["workpack_id"] == key)
         old_binding = _event(events, record["prepared_event_id"], "BUILD_AUTHORIZATION_PREPARED")["payload"]
-        if _production_signature(events, used, old_binding, task) != _production_signature(events, new_proposal, new_prepared, after[key]):
+        if (_production_signature(events, used, old_binding, task, snapshot_loader)
+                != _production_signature(events, new_proposal, new_prepared, after[key], snapshot_loader)):
             rebuild.add(key)
             continue
         intact = all(identity in superseded or (

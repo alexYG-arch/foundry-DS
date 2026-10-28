@@ -375,13 +375,46 @@ class RevisionControlEventStore:
                 "SELECT idempotency_key FROM control_idempotency WHERE program_id = ? ORDER BY idempotency_key",
                 (program_id,))]
 
-    def list_events(self, program_id):
+    def list_events(self, program_id, *, elide=None):
+        """Read a Program's whole stream in order.
+
+        ``elide`` maps an event type to payload fields that are removed inside
+        SQLite (``json_remove``) before the row reaches Python; the payload then
+        carries ``elided_fields`` naming them. Revision arithmetic, ordering and
+        every other payload stay intact, so control projections keep working
+        while multi-megabyte bodies are neither parsed nor hydrated. Callers
+        that need a body read that one event with ``get_event``.
+        """
+        if not elide:
+            with self._connection() as connection:
+                rows = connection.execute(
+                    "SELECT * FROM control_events WHERE program_id = ? ORDER BY stream_revision",
+                    (program_id,),
+                ).fetchall()
+            return [self._row_event(row) for row in rows]
+        if not isinstance(elide, Mapping) or not elide:
+            raise RequestValidationError("elide must map event types to payload field names")
+        cases, args = [], []
+        for event_type, fields in elide.items():
+            fields = tuple(fields)
+            if (not isinstance(event_type, str) or not event_type or not fields
+                    or any(not isinstance(f, str) or not f or not f.replace("_", "").isalnum() for f in fields)):
+                raise RequestValidationError("elide needs nonempty event types and simple payload field names")
+            paths = ", ".join(f"'$.{field}'" for field in fields)
+            cases.append(f"WHEN event_type = ? THEN json_remove(payload_json, {paths})")
+            args.append(event_type)
+        sql = (f"SELECT sequence, event_id, program_id, stream_revision, event_type, created_at, "
+               f"CASE {' '.join(cases)} ELSE payload_json END AS payload_json "
+               f"FROM control_events WHERE program_id = ? ORDER BY stream_revision")
         with self._connection() as connection:
-            rows = connection.execute(
-                "SELECT * FROM control_events WHERE program_id = ? ORDER BY stream_revision",
-                (program_id,),
-            ).fetchall()
-        return [self._row_event(row) for row in rows]
+            rows = connection.execute(sql, [*args, program_id]).fetchall()
+        events = []
+        for row in rows:
+            event = self._row_event(row)
+            if event["event_type"] in elide:
+                event["payload"]["elided_fields"] = sorted(elide[event["event_type"]])
+            events.append(event)
+        return events
 
     def list_program_ids(self):
         with self._connection() as connection:
