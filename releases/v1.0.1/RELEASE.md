@@ -1,6 +1,6 @@
 # Harness Foundry v1.0.1 local release
 
-Status: LOCAL_PACKAGE / TAG_PENDING
+Status: TAGGED_SOURCE / LOCAL_PACKAGE
 
 Version: 1.0.1
 Protocol: 2.9
