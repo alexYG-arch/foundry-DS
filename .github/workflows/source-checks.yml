@@ -63,6 +63,8 @@ jobs:
 
       - name: Re-run the local TCP gate probe with diagnostics
         if: failure()
+        env:
+          PYTHONPATH: src:tests
         run: |
           python -m unittest -v test_build_resources.BuildResourceIntegrationTests.test_local_tcp_capture_recovers_without_restarting_service_or_double_budget 2>&1 | tee /tmp/local-tcp.log
           tail -60 /tmp/local-tcp.log | while IFS= read -r line; do echo "::error title=Local TCP probe::$line"; done
