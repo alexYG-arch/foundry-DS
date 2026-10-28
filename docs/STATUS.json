@@ -29,23 +29,33 @@
     "semantics": "zero skips, zero failures within the platform's required set",
     "platform_sets": {
       "common": "REQUIRED_MODULES",
-      "darwin": ["test_sandbox_seatbelt", "test_agent_scope13_seatbelt"],
+      "darwin": [
+        "test_sandbox_seatbelt",
+        "test_agent_scope13_seatbelt"
+      ],
       "linux": []
     },
     "last_local_result": {
       "platform_set": "linux",
-      "discovered": 976,
-      "passed": 976,
+      "discovered": 1005,
+      "passed": 1005,
       "skipped": 0,
       "failed": 0,
-      "measured_on": "2026-10-28 after WP4/WP6",
-      "note": "numbers before the platform split: 963 discovered / 950 passed / 6 skipped / 7 failed on Linux"
+      "status": "SOURCE_CHECKS_PASS",
+      "measured_on": "2026-10-28 after WP0-WP8 (branch cursor/foundry-ds-a3-repair-24ef)",
+      "note": "before the platform split: 963 discovered / 950 passed / 6 skipped / 7 failed on Linux; after WP4+WP6: 976 / 976 / 0 / 0"
     }
   },
   "control_store": {
-    "formats": ["REVISION_V1", "REVISION_V1_DEDUP"],
+    "formats": [
+      "REVISION_V1",
+      "REVISION_V1_DEDUP"
+    ],
     "hot_path_reads": "stream reads elide BUILD_SOURCES_CAPTURED.snapshot inside SQLite; bodies are point reads (docs/A3_A4_CLOSURE.md)",
-    "offline_tools": ["tools/migrate_store_dedup.py", "tools/index_store_event_type.py"],
+    "offline_tools": [
+      "tools/migrate_store_dedup.py",
+      "tools/index_store_event_type.py"
+    ],
     "active_8_5gb_migration": "outside the verified range by the user's 2026-10-28 decision"
   }
 }
