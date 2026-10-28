@@ -3,6 +3,12 @@
 
 No model, target build, private Case, normative sibling or release upload is
 needed. Native opt-in and full compatibility tests remain separate obligations.
+
+The required set is platform-aware: ``REQUIRED_MODULES`` must pass everywhere,
+``PLATFORM_MODULES`` adds the modules that exercise a platform's real sandbox.
+Modules outside the current platform's set are not loaded at all, so the gate
+keeps its "zero skips, zero failures" meaning instead of failing on every
+Linux runner because macOS seatbelt is absent.
 """
 
 from __future__ import annotations
@@ -76,7 +82,6 @@ REQUIRED_MODULES = (
     "test_declarative_profile",
     "test_declarative_dispatch",
     "test_check_ios_env",
-    "test_sandbox_seatbelt",
     "test_sandbox_trusted",
     "test_agent_scope13",
     "test_dsh_adapter",
@@ -92,7 +97,25 @@ REQUIRED_MODULES = (
     "test_execution_limits",
     "test_verifier_runner",
     "test_check_design_record",
+    "test_revision_store_dedup",
+    "test_control_view",
+    "test_a3a4_helpers",
 )
+# Real-sandbox modules: loaded only where that sandbox exists. The gate still
+# forbids skips inside whatever set it loads.
+PLATFORM_MODULES = {
+    "darwin": ("test_sandbox_seatbelt", "test_agent_scope13_seatbelt"),
+    "linux": (),
+}
+
+
+def platform_key(platform: str | None = None) -> str:
+    value = platform or sys.platform
+    return "darwin" if value == "darwin" else "linux" if value.startswith("linux") else value
+
+
+def required_modules(platform: str | None = None) -> tuple[str, ...]:
+    return tuple(REQUIRED_MODULES) + tuple(PLATFORM_MODULES.get(platform_key(platform), ()))
 
 
 class RequiredResult(unittest.TextTestResult):
@@ -151,7 +174,8 @@ def source_checks(receipt=None) -> dict:
     suites = []
     missing = []
     empty = []
-    for module in REQUIRED_MODULES:
+    modules = required_modules()
+    for module in modules:
         if not (ROOT / "tests" / f"{module}.py").is_file():
             missing.append(module)
             continue
@@ -183,7 +207,10 @@ def source_checks(receipt=None) -> dict:
         "status": "SOURCE_CHECKS_PASS" if passed else "SOURCE_CHECKS_FAIL",
         "scope": "PUBLIC_GENERIC_SOURCE_WITH_HISTORICAL_REGRESSION_AND_PORTABLE_SMOKE",
         "historical_regression_is_current_product_acceptance": False,
-        "required_modules": list(REQUIRED_MODULES),
+        "platform": sys.platform,
+        "platform_set": platform_key(),
+        "platform_modules": list(PLATFORM_MODULES.get(platform_key(), ())),
+        "required_modules": list(modules),
         "missing_modules": missing,
         "empty_modules": empty,
         "load_errors": loader.errors,

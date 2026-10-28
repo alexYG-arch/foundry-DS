@@ -67,6 +67,18 @@ class ReleaseSourceGateTests(unittest.TestCase):
             self.assertFalse(result["release_accepted"])
             self.assertFalse(result["harness_e2e_verified"])
 
+    def test_platform_sets_only_add_real_sandbox_modules_where_they_exist(self):
+        common = set(gate.REQUIRED_MODULES)
+        darwin, linux = set(gate.required_modules("darwin")), set(gate.required_modules("linux"))
+        self.assertTrue(common <= darwin and common <= linux)
+        self.assertEqual(darwin - common, {"test_sandbox_seatbelt", "test_agent_scope13_seatbelt"})
+        self.assertFalse(linux & {"test_sandbox_seatbelt", "test_agent_scope13_seatbelt"})
+        self.assertNotIn("test_sandbox_seatbelt", common)
+        for module in gate.required_modules("darwin") + gate.required_modules("linux"):
+            self.assertTrue((ROOT / "tests" / f"{module}.py").is_file(), module)
+        # Everything the generic release ships from the A3/A4 work is gated.
+        self.assertTrue({"test_revision_store_dedup", "test_control_view", "test_a3a4_helpers"} <= common)
+
     def test_license_and_canonical_repository_are_shipped_metadata(self):
         project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
         self.assertEqual(project["license"], "MIT")

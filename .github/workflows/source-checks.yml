@@ -10,9 +10,17 @@ permissions:
 
 jobs:
   source-checks:
-    name: Public source and portable smoke (not release acceptance)
-    runs-on: ubuntu-latest
+    name: Public source and portable smoke (${{ matrix.os }}; not release acceptance)
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # The gate loads a platform-specific required set: the common modules
+        # everywhere, plus the real-sandbox modules of the platform that has
+        # that sandbox (seatbelt on macOS). A red job on one OS is a real
+        # failure of that OS's set, not a missing-sandbox skip.
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
         with:
@@ -20,6 +28,9 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.13'
+      - name: Install optional Linux sandbox (bubblewrap) for local hardening probes
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap
       - name: Install declared test dependencies
         run: python -m pip install '.[test,security]'
       - name: Run required public checks (skips fail)
@@ -28,6 +39,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: public-source-checks
+          name: public-source-checks-${{ matrix.os }}
           path: build/source-checks.json
           if-no-files-found: error
