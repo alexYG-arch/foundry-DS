@@ -376,16 +376,20 @@ def prepare_build_scope(store, ir, plan, source, scope, *, created_at,
 
 def prepare_agent_scope(store, ir, plan, source, scope, *, created_at):
     """Validate a Plan/Scope 1.3 preparation without a Codex receiver."""
-    from .agents.scope13 import validate_scope_13
+    from .agents.scope13 import validate_scope_13, verifier_files
     validate_build_plan(ir, plan)
     validate_requirement_source_bindings(ir, source["snapshot"])
     contracts = validate_acceptance_contracts(ir, snapshot=source["snapshot"], required=True)
     scope = deepcopy(scope)
-    validate_scope_13(plan, scope)
+    try:
+        validate_scope_13(plan, scope)
+        files = verifier_files(plan, scope)
+    except ValueError as exc:
+        raise RequestValidationError(str(exc)) from exc
     _check(_utc(created_at) < _utc(scope["expires_at"]), "authorization already expired")
     _check_native_layout(store, scope, source)
     owners = {task["workpack_id"]: [task["workpack_id"]] for task in plan["workpacks"]}
-    return {"scope": scope, "plan": plan, "verifier_files": {}, "acceptance_contracts": contracts,
+    return {"scope": scope, "plan": plan, "verifier_files": files, "acceptance_contracts": contracts,
             "task_budget_owners": owners}
 
 

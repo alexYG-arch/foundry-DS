@@ -20,10 +20,12 @@ from uuid import uuid4
 from .base import AgentRequest
 from .dsh import DshHeadlessAdapter
 from .api import DeepseekApiAdapter
+from .sandbox_none import NoneSandboxProvider
 from .sandbox_seatbelt import SeatbeltSandboxProvider
 from .sandbox_bwrap import BubblewrapSandboxProvider
 from .sandbox_trusted import TrustedHostProvider
-from .scope13 import validate_scope_13
+from .scope13 import (agent_read_roots, assurance_label, execution_mode, fs_enforcement,
+                      validate_scope_13, verifier_files)
 from .artifacts import ingest as ingest_artifacts
 from .verifier import VerifierContract, VerifierContractError
 from .verifier_runner import run_verifier
@@ -71,11 +73,30 @@ class AgentBuildController:
         return prompt
 
     def _provider(self, scope):
+        """The provider the validated scope declares; never a silent platform guess."""
         if self.provider is not None:
             return self.provider
-        if scope.get("execution", {}).get("mode") == "TRUSTED_HOST":
+        if execution_mode(scope) == "TRUSTED_HOST":
             return TrustedHostProvider()
-        return SeatbeltSandboxProvider() if Path("/usr/bin/sandbox-exec").is_file() else BubblewrapSandboxProvider()
+        provider = scope["sandbox"]["provider"]
+        if provider == "seatbelt":
+            return SeatbeltSandboxProvider()
+        if provider == "bwrap":
+            return BubblewrapSandboxProvider()
+        return NoneSandboxProvider(allow_unsandboxed_agent=True)
+
+    @staticmethod
+    def _enforcement(scope, provider):
+        """Facts about what actually constrained the task process, from the
+        provider that ran it rather than from the scope's declaration."""
+        provider_id = getattr(provider, "provider_id", "UNKNOWN")
+        sandboxed = provider_id in {"seatbelt", "bwrap"}
+        return {"execution_mode": execution_mode(scope),
+                "fs_enforcement": "SANDBOX" if sandboxed else "NONE",
+                "assurance": "CONTRACT_PLUS_SANDBOX" if sandboxed else "CONTRACT_INDEPENDENCE_DETECT_ONLY",
+                "declared_fs_enforcement": fs_enforcement(scope),
+                "declared_assurance": assurance_label(scope),
+                "task_sandbox_provider": provider_id}
 
     def _verify(self, task, scope, workspace):
         results = []
@@ -89,7 +110,7 @@ class AgentBuildController:
                 if value.startswith("verifier://"):
                     argv[index] = str((Path(scope["verification_root"]) / value.removeprefix("verifier://")).resolve())
             command = SimpleNamespace(argv=argv, cwd=workspace,
-                                      read_roots=[workspace, Path(scope["verification_root"])],
+                                      read_roots=[workspace, Path(scope["verification_root"]), *agent_read_roots(scope)],
                                       write_roots=[], timeout_seconds=scope["command_timeout_seconds"],
                                       environment={}, network=None)
             observed = self._provider(scope).run(command, before_dispatch=lambda: None)
@@ -136,6 +157,20 @@ class AgentBuildController:
         staging_root = Path(scope["staging_root"]).resolve() if "staging_root" in scope else None
         cas_root = Path(scope["cas_root"]).resolve() if "cas_root" in scope else None
         use_cas = staging_root is not None and cas_root is not None
+        provider = self._provider(scope)
+        enforcement = self._enforcement(scope, provider)
+        # verifier:// files are bound at preparation (when prepared through the
+        # host) and re-read here; any drift stops before dispatch.
+        try:
+            checker_binding = verifier_files(plan, scope)
+        except (OSError, ValueError) as exc:
+            return {"status": "HELD_VERIFIER_IDENTITY", "diagnostic": str(exc),
+                    "execution_started": False, "harness_e2e_verified": False}
+        prepared_binding = prepared["payload"].get("verifier_files") or None
+        if prepared_binding is not None and prepared_binding != checker_binding:
+            return {"status": "HELD_VERIFIER_IDENTITY",
+                    "diagnostic": "verification files changed since preparation",
+                    "execution_started": False, "harness_e2e_verified": False}
         if use_cas:
             staging_root.mkdir(parents=True, exist_ok=True)
             cas_root.mkdir(parents=True, exist_ok=True)
@@ -169,6 +204,13 @@ class AgentBuildController:
                     return {"status": "HELD_VERIFIER_IDENTITY", "workpack_id": task["workpack_id"],
                             "diagnostic": str(exc), "execution_started": False,
                             "harness_e2e_verified": False}
+                if not use_cas:
+                    # A declared independent verifier that cannot run must not
+                    # silently degrade acceptance to the plain checks.
+                    return {"status": "HELD_VERIFIER_NOT_RUNNABLE", "workpack_id": task["workpack_id"],
+                            "diagnostic": "verifier contract requires staging_root and cas_root (CAS_ONLY inputs)",
+                            "next_action": "CONFIGURE_STAGING_AND_CAS", "execution_started": False,
+                            "harness_e2e_verified": False}
             task_attempts = 0
             feedback = None
             while True:
@@ -186,9 +228,10 @@ class AgentBuildController:
                 owners = prepared.get("task_budget_owners", {}).get(task["workpack_id"], [task["workpack_id"]])
                 started = {"attempt_id": attempt_id, "workpack_id": task["workpack_id"],
                            "job_id": task["job_id"], "prepared_event_id": prepared_id,
-                           "proposal_event_id": prepared.get("proposal_event_id"),
+                           "proposal_event_id": prepared["payload"].get("proposal_event_id"),
                            "budget_workpack_ids": owners, "executor": "AGENT",
                            "adapter": task["agent"]["adapter"],
+                           "checker_binding": checker_binding, **enforcement,
                        **({"verifier_identity": verifier_identity} if verifier_identity is not None else {})}
                 self.store.append_batch(self.program_id, [{"event_type": "BUILD_ATTEMPT_STARTED",
                     "payload": started}], expected_revision=len(events),
@@ -199,7 +242,9 @@ class AgentBuildController:
                 if use_cas:
                     attempt_workspace.mkdir(parents=True, exist_ok=True)
                 command = SimpleNamespace(scope=SimpleNamespace(
-                    cwd=attempt_workspace, read_roots=(attempt_workspace, *[Path(root) for root in scope["source_read_roots"]]),
+                    cwd=attempt_workspace,
+                    read_roots=(attempt_workspace, *[Path(root) for root in scope["source_read_roots"]],
+                                *agent_read_roots(scope)),
                     write_roots=(attempt_workspace,),
                     timeout_seconds=scope["command_timeout_seconds"], environment={},
                     max_cpu_seconds=scope.get("max_cpu_seconds"), max_memory_bytes=scope.get("max_memory_bytes"),
@@ -234,7 +279,15 @@ class AgentBuildController:
                                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
                 except (OSError, ValueError) as exc:
                     artifact_error = str(exc)
-                verification = [] if artifact_error else self._verify(task, scope, verification_root)
+                verifier_drift = None
+                if artifact_error is None:
+                    try:
+                        current_binding = verifier_files(plan, scope)
+                    except (OSError, ValueError) as exc:
+                        current_binding, verifier_drift = None, str(exc)
+                    if verifier_drift is None and current_binding != checker_binding:
+                        verifier_drift = "verification files changed during the attempt"
+                verification = [] if artifact_error or verifier_drift else self._verify(task, scope, verification_root)
                 verifier_result = None
                 if verifier_contract is not None and use_cas and artifact_error is None:
                     try:
@@ -246,18 +299,22 @@ class AgentBuildController:
                                            "diagnostic": str(exc), "acceptance": False}
                 if use_cas:
                     shutil.rmtree(verification_root, ignore_errors=True)
-                passed = (result.get("status") == "PASS" and artifact_error is None
+                passed = (result.get("status") == "PASS" and artifact_error is None and verifier_drift is None
                           and bool(verification) and all(row["result"].get("status") == "PASS" for row in verification)
                           and (verifier_result is None or verifier_result.get("status") == "PASS"))
-                payload = {**started, "status": "ACCEPTED" if passed else "REJECTED",
+                # Checker drift is an infrastructure hold, not a product rejection.
+                status = "ACCEPTED" if passed else "BLOCKED" if verifier_drift else "REJECTED"
+                payload = {**started, "status": status,
                            "artifacts": artifacts, "artifact_error": artifact_error,
                            "verification": verification,
                            "effects": {"status": "NOT_OBSERVED", "external_effects_verified": False},
                            "result": result, "workpack_accepted": passed, "cas_manifest": cas_manifest,
                            **({"verifier_identity": verifier_identity} if verifier_identity is not None else {}),
                            **({"verifier_result": verifier_result} if verifier_result is not None else {}),
+                           **({"blocked_reason": "VERIFIER_IDENTITY_DRIFT", "diagnostic": verifier_drift}
+                              if verifier_drift else {}),
                            "agent_sandbox_enforcement": getattr(getattr(adapter, "capabilities", None), "sandbox", "UNKNOWN"),
-                           "task_sandbox_provider": self._provider(scope).provider_id}
+                           **enforcement}
                 self.store.append_batch(self.program_id, [{"event_type": "BUILD_ATTEMPT_FINISHED",
                     "payload": payload}], expected_revision=len(events),
                     idempotency_key=attempt_id + ":finish",
@@ -266,6 +323,11 @@ class AgentBuildController:
                 if passed:
                     accepted.append(task["workpack_id"])
                     break
+                if verifier_drift:
+                    return {"status": "HELD_VERIFIER_IDENTITY", "workpack_id": task["workpack_id"],
+                            "attempt_id": attempt_id, "diagnostic": verifier_drift,
+                            "accepted_workpacks": accepted, "attempts_used": used,
+                            "execution_started": True, "harness_e2e_verified": False}
                 if task_attempts >= scope["max_task_attempts"]:
                     return {"status": "TASK_REPAIR_BUDGET_EXHAUSTED", "workpack_id": task["workpack_id"],
                             "attempt_id": attempt_id, "artifact_error": artifact_error,
@@ -291,6 +353,5 @@ class AgentBuildController:
                             "harness_e2e_verified": False}
         return {"status": "PLAN_CHECKS_ACCEPTED", "accepted_workpacks": accepted,
                 "attempts_used": used, "agent_controller": "EXPERIMENTAL_1_3",
-                "agent_sandbox_enforcement": agent_sandbox,
-                "task_sandbox_provider": self._provider(scope).provider_id,
+                "agent_sandbox_enforcement": agent_sandbox, **enforcement,
                 "harness_e2e_verified": False}

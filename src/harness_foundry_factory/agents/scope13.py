@@ -1,12 +1,19 @@
 """Scope 1.3 validation and AGENT dispatch (P1 fixture path).
 
 The scope shape is deliberately separate from the 1.2 Codex scope: it has no
-`codex_executable`, declares an adapter and a real sandbox provider, and fails
-closed when the plan is not 1.3.
+`codex_executable`, declares an adapter and an execution mode, and fails closed
+when the plan is not 1.3.
+
+Execution mode and sandbox provider must agree: ``execution.mode ==
+"TRUSTED_HOST"`` runs commands directly and therefore requires
+``sandbox.provider == "none"``; a seatbelt/bwrap provider is only honoured
+when the execution mode is a sandboxed one. A scope can no longer *display*
+seatbelt while *running* unsandboxed.
 """
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,11 +29,61 @@ OPTIONAL_FIELDS = {"staging_root", "cas_root", "execution", "max_cpu_seconds",
 AGENT_FIELDS = {"adapter", "executable", "dsh_home", "session", "model", "base_url", "key_file"}
 SANDBOX_FIELDS = {"provider", "network"}
 PROVIDERS = {"seatbelt", "bwrap", "none"}
+SANDBOXED_PROVIDERS = {"seatbelt", "bwrap"}
+EXECUTION_MODES = {"TRUSTED_HOST", "UID", "VM", "SANDBOX"}
 
 
 def _require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def execution_mode(scope) -> str:
+    """Effective execution mode; a missing block means a sandboxed provider."""
+    mode = scope.get("execution", {}).get("mode") if isinstance(scope.get("execution"), dict) else None
+    return mode or "SANDBOX"
+
+
+def fs_enforcement(scope) -> str:
+    """What the task process actually gets: ``SANDBOX`` or ``NONE``."""
+    return "SANDBOX" if scope["sandbox"]["provider"] in SANDBOXED_PROVIDERS else "NONE"
+
+
+def assurance_label(scope) -> str:
+    return "CONTRACT_PLUS_SANDBOX" if fs_enforcement(scope) == "SANDBOX" else "CONTRACT_INDEPENDENCE_DETECT_ONLY"
+
+
+def _file_identity(path: Path) -> dict:
+    data = path.read_bytes()
+    return {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def verifier_references(plan) -> dict[str, list[str]]:
+    """``verifier://`` relative paths referenced by each workpack's checks."""
+    references = {}
+    for workpack in plan["workpacks"]:
+        names = []
+        for check in workpack["verification"]:
+            names.extend(arg.removeprefix("verifier://") for arg in check["argv"][1:]
+                         if isinstance(arg, str) and arg.startswith("verifier://"))
+        references[workpack["workpack_id"]] = names
+    return references
+
+
+def verifier_files(plan, scope) -> dict[str, dict]:
+    """Identity of every ``verifier://`` file the plan's checks reference.
+
+    Mirrors the 1.2 ``_validate_scope`` binding so the controller can detect a
+    checker that changed between preparation and dispatch.
+    """
+    root = Path(scope["verification_root"]).resolve()
+    files = {}
+    for names in verifier_references(plan).values():
+        for name in names:
+            path = _relative_under(root, name, "verifier file")
+            _require(path.is_file(), f"verifier file is missing: {name}")
+            files[name] = _file_identity(path)
+    return files
 
 
 def _absolute_file(value, label):
@@ -66,8 +123,7 @@ def validate_scope_13(plan, scope, *, test_only=False):
                      f"{name} must be a nonnegative integer")
     if "execution" in scope:
         execution = scope["execution"]
-        _require(isinstance(execution, dict) and execution.get("mode") in
-                 {"TRUSTED_HOST", "UID", "VM", "SANDBOX"},
+        _require(isinstance(execution, dict) and execution.get("mode") in EXECUTION_MODES,
                  "execution.mode is unsupported")
     if "staging_root" in scope and "cas_root" in scope:
         staging, cas = Path(scope["staging_root"]).resolve(), Path(scope["cas_root"]).resolve()
@@ -123,8 +179,15 @@ def validate_scope_13(plan, scope, *, test_only=False):
     _require(isinstance(sandbox, dict) and set(sandbox) == SANDBOX_FIELDS,
              "sandbox must contain provider and network")
     _require(sandbox["provider"] in PROVIDERS, "unsupported sandbox provider")
-    if sandbox["provider"] == "none":
-        _require(test_only is True, "none provider is test-only; production needs seatbelt/bwrap")
+    mode = execution_mode(scope)
+    if mode == "TRUSTED_HOST":
+        # The host runs commands directly; a seatbelt/bwrap label would be a
+        # claim the run cannot honour.
+        _require(sandbox["provider"] == "none",
+                 "TRUSTED_HOST execution runs unsandboxed; declare sandbox.provider none explicitly")
+    elif sandbox["provider"] == "none":
+        _require(test_only is True,
+                 "none provider needs explicit execution.mode TRUSTED_HOST (or test_only); production sandboxing needs seatbelt/bwrap")
     network = sandbox["network"]
     _require(isinstance(network, dict) and set(network) == {"agent_egress", "task_network"},
              "sandbox.network must declare agent_egress and task_network")
@@ -139,6 +202,7 @@ def validate_scope_13(plan, scope, *, test_only=False):
     tasks = {workpack["workpack_id"]: workpack for workpack in plan["workpacks"]}
     writes = scope["task_write_roots"]
     _require(isinstance(writes, dict) and set(writes) == set(tasks), "every workpack needs write roots")
+    all_write_roots = []
     for workpack_id, workpack in tasks.items():
         roots = writes[workpack_id]
         _require(isinstance(roots, list) and bool(roots), "task write roots must be nonempty")
@@ -148,6 +212,7 @@ def validate_scope_13(plan, scope, *, test_only=False):
             _require(path.is_absolute() and path.is_dir() and path.is_relative_to(workspace),
                      "task write roots must be existing workspace directories")
             resolved.append(path)
+        all_write_roots.extend(path.resolve() for path in resolved)
         for artifact in workpack["artifacts"]:
             target = _relative_under(workspace, artifact["path"], "artifact path")
             _require(any(target.is_relative_to(root) for root in resolved),
@@ -157,7 +222,27 @@ def validate_scope_13(plan, scope, *, test_only=False):
                      "LOCAL workpack needs a declared executable")
         for check in workpack["verification"]:
             _require(check["argv"][0] in scope["executables"], "verification executable is not declared")
+            referenced = [arg for arg in check["argv"][1:] if isinstance(arg, str) and arg.startswith("verifier://")]
+            _require(bool(referenced) or isinstance(workpack.get("verifier"), dict),
+                     "verification must reference independently owned verifier:// files or declare a verifier contract")
+    # Trust the declared tool and agent installations: an implementation must
+    # not be able to rewrite the binary that later checks or drives it.
+    binaries = list(scope["executables"].values()) + [
+        definition["executable"] for definition in agents.values() if isinstance(definition.get("executable"), str)]
+    for binary in binaries:
+        for path in (Path(binary), Path(binary).resolve()):
+            _require(not any(path.is_relative_to(root) for root in all_write_roots),
+                     "executable or agent binary must not be task-writable")
+    verifier_files(plan, scope)
     return scope
+
+
+def agent_read_roots(scope) -> tuple[Path, ...]:
+    """Declared tool and agent binaries: readable, never inside a write root."""
+    paths = [Path(value) for value in scope["executables"].values()]
+    paths.extend(Path(definition["executable"]) for definition in scope["agents"].values()
+                 if isinstance(definition.get("executable"), str))
+    return tuple(paths)
 
 
 def run_agent_workpack(plan, scope, workpack_id, *, adapter, provider, prompt, before_dispatch=None):
@@ -178,7 +263,7 @@ def run_agent_workpack(plan, scope, workpack_id, *, adapter, provider, prompt, b
 
     command = SimpleNamespace(scope=SimpleNamespace(
         cwd=workspace,
-        read_roots=(workspace, *[Path(root) for root in scope["source_read_roots"]]),
+        read_roots=(workspace, *[Path(root) for root in scope["source_read_roots"]], *agent_read_roots(scope)),
         write_roots=tuple(Path(root) for root in scope["task_write_roots"][workpack_id]),
         timeout_seconds=scope["command_timeout_seconds"],
         environment={},

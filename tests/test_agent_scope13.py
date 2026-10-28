@@ -1,17 +1,23 @@
-"""Scope 1.3 + AGENT fixture E2E: no Codex, real seatbelt, no model."""
+"""Scope 1.3 + AGENT fixture: no Codex, no model, platform-neutral provider.
+
+The real seatbelt run lives in ``test_agent_scope13_seatbelt`` (darwin gate set).
+"""
 
 from __future__ import annotations
 
 import json
 import shutil
 import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 from harness_foundry_factory.agents.profile import DeclarativeAdapter, DeclarativeProfile
-from harness_foundry_factory.agents.sandbox_seatbelt import SeatbeltSandboxProvider
-from harness_foundry_factory.agents.scope13 import run_agent_workpack, validate_scope_13
+from harness_foundry_factory.agents.sandbox_trusted import TrustedHostProvider
+from harness_foundry_factory.agents.scope13 import (
+    agent_read_roots, run_agent_workpack, validate_scope_13, verifier_files,
+)
 from harness_foundry_factory.build_plan import compile_build_plan
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,15 +47,20 @@ def requirement():
                 "inputs": [{"kind": "SOURCE", "id": "BRIEF"}],
                 "artifacts": [{"artifact_id": "READER", "path": "src/reader.py"}],
                 "verification": [
-                    {"case_id": "C1", "argv": ["true"], "artifact_ids": ["READER"]},
-                    {"case_id": "N1", "argv": ["true"], "artifact_ids": ["READER"]},
+                    {"case_id": "C1", "argv": ["python", "verifier://check.py"], "artifact_ids": ["READER"]},
+                    {"case_id": "N1", "argv": ["python", "verifier://check.py", "--negative"], "artifact_ids": ["READER"]},
                 ],
             }],
         },
     }
 
 
-class AgentScope13Tests(unittest.TestCase):
+class AgentScope13Fixture(unittest.TestCase):
+    """Shared layout: agent binary outside the workspace, checker in its own root."""
+
+    provider_block = {"provider": "none", "network": {"agent_egress": "NONE", "task_network": "NONE"}}
+    execution_block = {"mode": "TRUSTED_HOST"}
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -58,7 +69,10 @@ class AgentScope13Tests(unittest.TestCase):
         self.workspace.mkdir()
         self.verifier = self.root / "verifier"
         self.verifier.mkdir()
-        self.agent = self.workspace / "fixture-agent"
+        (self.verifier / "check.py").write_text("print('ok')\n")
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        self.agent = bin_dir / "fixture-agent"
         shutil.copy2(AGENT, self.agent)
         self.agent.chmod(self.agent.stat().st_mode | stat.S_IXUSR)
         raw = json.loads(PROFILE.read_text())
@@ -68,27 +82,31 @@ class AgentScope13Tests(unittest.TestCase):
         self.scope = {
             "scope_version": "1.3",
             "agents": {"fixture": {"adapter": "fixture-agent", "executable": str(self.agent)}},
-            "sandbox": {"provider": "seatbelt", "network": {"agent_egress": "NONE", "task_network": "NONE"}},
+            "sandbox": dict(self.provider_block),
             "usage_accounting": "ADAPTER_REPORTED",
             "workspace_root": str(self.workspace),
             "source_read_roots": [str(self.workspace)],
             "verification_root": str(self.verifier),
             "task_write_roots": {"IMPLEMENT": [str(self.workspace)]},
-            "executables": {"true": "/usr/bin/true"},
+            "executables": {"python": sys.executable},
             "max_attempts": 3, "max_task_attempts": 2, "command_timeout_seconds": 30,
             "expires_at": "2099-01-01T00:00:00Z",
         }
+        if self.execution_block is not None:
+            self.scope["execution"] = dict(self.execution_block)
 
-    def test_scope_13_and_fixture_agent_run_without_codex(self):
+
+class AgentScope13Tests(AgentScope13Fixture):
+    def test_scope_13_and_fixture_agent_run_without_codex_on_trusted_host(self):
         compiled = compile_build_plan(requirement()["requirement_ir"], self.plan)
         self.assertEqual(compiled["plan"]["schema_version"], "1.3")
         validate_scope_13(self.plan, self.scope)
-        adapter = DeclarativeAdapter(self.profile, executable=self.agent,
-                                     provider=SeatbeltSandboxProvider())
+        adapter = DeclarativeAdapter(self.profile, executable=self.agent, provider=TrustedHostProvider())
         result = run_agent_workpack(self.plan, self.scope, "IMPLEMENT", adapter=adapter,
-                                    provider=SeatbeltSandboxProvider(), prompt="hello")
+                                    provider=TrustedHostProvider(), prompt="hello")
         self.assertEqual(result["status"], "PASS", result)
-        self.assertEqual(result["sandbox_enforcement"], "SEATBELT")
+        self.assertEqual(result["sandbox_enforcement"], "NONE")
+        self.assertEqual(result["assurance"], "CONTRACT_INDEPENDENCE")
         self.assertEqual(result["before_dispatch_calls"], 1)
         self.assertEqual((self.workspace / "src/reader.py").read_text(), "VALUE = 'fixture'\n")
         self.assertFalse(result["workpack_accepted"])
@@ -97,8 +115,36 @@ class AgentScope13Tests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_scope_13(self.plan, bad)
 
-    def test_none_provider_is_test_only(self):
-        scope = dict(self.scope, sandbox={"provider": "none", "network": {"agent_egress": "NONE", "task_network": "NONE"}})
+    def test_agent_and_tool_binaries_are_readable_but_not_task_writable(self):
+        self.assertEqual(set(agent_read_roots(self.scope)), {Path(sys.executable), self.agent})
+        inside = self.workspace / "fixture-agent"
+        shutil.copy2(AGENT, inside)
+        inside.chmod(inside.stat().st_mode | stat.S_IXUSR)
+        scope = json.loads(json.dumps(self.scope))
+        scope["agents"]["fixture"]["executable"] = str(inside)
+        with self.assertRaisesRegex(ValueError, "must not be task-writable"):
+            validate_scope_13(self.plan, scope)
+
+    def test_verifier_files_bind_every_referenced_checker(self):
+        files = verifier_files(self.plan, self.scope)
+        self.assertEqual(set(files), {"check.py"})
+        self.assertEqual(files["check.py"]["size"], len("print('ok')\n"))
+        (self.verifier / "check.py").write_text("print('changed')\n")
+        self.assertNotEqual(verifier_files(self.plan, self.scope), files)
+
+    def test_execution_mode_and_provider_must_agree(self):
+        seatbelt = json.loads(json.dumps(self.scope))
+        seatbelt["sandbox"]["provider"] = "seatbelt"
+        with self.assertRaisesRegex(ValueError, "TRUSTED_HOST execution runs unsandboxed"):
+            validate_scope_13(self.plan, seatbelt)
+        sandboxed = json.loads(json.dumps(self.scope))
+        sandboxed["execution"] = {"mode": "SANDBOX"}
+        sandboxed["sandbox"]["provider"] = "bwrap"
+        validate_scope_13(self.plan, sandboxed)
+
+    def test_none_provider_is_test_only_without_explicit_trusted_host(self):
+        scope = json.loads(json.dumps(self.scope))
+        del scope["execution"]
         with self.assertRaises(ValueError):
             validate_scope_13(self.plan, scope)
         validate_scope_13(self.plan, scope, test_only=True)

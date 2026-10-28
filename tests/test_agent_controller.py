@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 import shutil
 import stat
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
 from harness_foundry_factory.agents.agent_controller import AgentBuildController
+from harness_foundry_factory.agents.scope13 import validate_scope_13
 from harness_foundry_factory.build_entrypoint import apply_build_request
 from harness_foundry_factory.store import ControlEventStore
 
@@ -53,10 +55,14 @@ class AgentControllerTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         self.workspace = self.root / "workspace"; self.workspace.mkdir()
         self.verifier = self.root / "verifier"; self.verifier.mkdir()
+        (self.verifier / "check.py").write_text("print('ok')\n")
         self.dsh_home = self.root / "dsh-home"; self.dsh_home.mkdir()
         key_dir = self.dsh_home / "foundry"; key_dir.mkdir()
         self.key = key_dir / "deepseek.key"; self.key.write_text("fake-controller-key\n"); self.key.chmod(0o600)
-        self.dsh = self.workspace / "dsh"; shutil.copy2(FAKE, self.dsh)
+        # The agent binary lives outside every task write root: an
+        # implementation must not be able to rewrite the agent that drives it.
+        bin_dir = self.root / "bin"; bin_dir.mkdir()
+        self.dsh = bin_dir / "dsh"; shutil.copy2(FAKE, self.dsh)
         self.dsh.chmod(self.dsh.stat().st_mode | stat.S_IXUSR)
         self.plan = {
             "schema_version": "1.3", "plan_id": "P", "revision": 1, "requirement_revision": 1,
@@ -65,18 +71,21 @@ class AgentControllerTests(unittest.TestCase):
                 "agent": {"adapter": "dsh-headless", "adapter_version": "1"},
                 "goal": "Write proof.txt.", "depends_on": [], "atom_ids": ["A1"],
                 "inputs": [], "artifacts": [{"artifact_id": "PROOF", "path": "proof.txt"}],
-                "verification": [{"case_id": "C1", "argv": ["true"], "artifact_ids": ["PROOF"]}],
+                "verification": [{"case_id": "C1", "argv": ["python", "verifier://check.py"], "artifact_ids": ["PROOF"]}],
             }],
         }
+        # TRUSTED_HOST with an explicit "none" provider: platform-neutral, and the
+        # scope says what actually runs (no sandbox) instead of displaying seatbelt.
         self.scope = {
             "scope_version": "1.3",
             "agents": {"dsh": {"adapter": "dsh-headless", "executable": str(self.dsh),
                                "dsh_home": str(self.dsh_home)}},
-            "sandbox": {"provider": "seatbelt", "network": {"agent_egress": "NONE", "task_network": "NONE"}},
+            "sandbox": {"provider": "none", "network": {"agent_egress": "NONE", "task_network": "NONE"}},
+            "execution": {"mode": "TRUSTED_HOST"},
             "usage_accounting": "UNKNOWN", "workspace_root": str(self.workspace),
             "source_read_roots": [str(self.workspace)], "verification_root": str(self.verifier),
             "task_write_roots": {"IMPLEMENT": [str(self.workspace)]},
-            "executables": {"true": "/usr/bin/true"}, "max_attempts": 3, "max_task_attempts": 2,
+            "executables": {"python": sys.executable}, "max_attempts": 3, "max_task_attempts": 2,
             "command_timeout_seconds": 30, "expires_at": "2099-01-01T00:00:00Z",
         }
         self.store = ControlEventStore(self.root / "control.sqlite3", storage_format="REVISION_V1")
@@ -99,7 +108,12 @@ class AgentControllerTests(unittest.TestCase):
                          ["BUILD_ATTEMPT_STARTED", "BUILD_ATTEMPT_FINISHED"])
         self.assertFalse(result["harness_e2e_verified"])
         self.assertEqual(result["agent_sandbox_enforcement"], "NATIVE")
-        self.assertEqual(result["task_sandbox_provider"], "seatbelt")
+        self.assertEqual(result["task_sandbox_provider"], "trusted-host")
+        self.assertEqual(result["fs_enforcement"], "NONE")
+        self.assertEqual(result["assurance"], "CONTRACT_INDEPENDENCE_DETECT_ONLY")
+        finished = events[-1]["payload"]
+        self.assertEqual((finished["fs_enforcement"], finished["execution_mode"]), ("NONE", "TRUSTED_HOST"))
+        self.assertEqual(set(finished["checker_binding"]), {"check.py"})
 
     def test_advance_build_routes_13_prepared_event_to_agent_controller(self):
         result = apply_build_request("advance-build", {
@@ -230,43 +244,130 @@ class AgentControllerTests(unittest.TestCase):
         self.assertTrue(target.is_file())
         self.assertEqual(target.read_text(), "CAS_CONTROLLER_OK")
 
-    def test_controller_checks_independent_verifier_hash_before_dispatch(self):
-        import hashlib, json as _json
-        code = self.verifier / "check.py"; expected = self.verifier / "expected.json"
-        code.write_text("import json; print(json.dumps({'status':'PASS'}))\n")
-        expected.write_text('{"ok": true}\n')
-        plan = _json.loads(_json.dumps(self.plan))
-        task = plan["workpacks"][0]
-        task["verifier"] = {"verifier_id": "V1", "owner": "verifier-owner",
-            "code_ref": "check.py", "code_sha256": hashlib.sha256(code.read_bytes()).hexdigest(),
-            "expected_ref": "expected.json", "expected_sha256": hashlib.sha256(expected.read_bytes()).hexdigest(),
-            "input_policy": "CAS_ONLY"}
+    def _prepare(self, scope, plan, key):
         now = datetime.now(timezone.utc).isoformat()
         revision = len(self.store.list_events(self.program))
         prepared = self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_PREPARED",
-            "payload": {"scope": self.scope, "plan": plan}}], expected_revision=revision,
-            idempotency_key="verify-prepare", created_at=now, require_new=True)[0]
+            "payload": {"scope": scope, "plan": plan}}], expected_revision=revision,
+            idempotency_key=key + "-prepare", created_at=now, require_new=True)[0]
         self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_APPROVED",
             "payload": {"prepared_event_id": prepared["event_id"]}}], expected_revision=revision + 1,
-            idempotency_key="verify-approve", created_at=now, require_new=True)
-        adapter = FlakyAdapter(self.workspace)
+            idempotency_key=key + "-approve", created_at=now, require_new=True)
+        return prepared
+
+    def _contract_plan(self):
+        import hashlib
+        code = self.verifier / "contract.py"; expected = self.verifier / "expected.json"
+        code.write_text("import json; print(json.dumps({'status':'PASS'}))\n")
+        expected.write_text('{"ok": true}\n')
+        plan = json.loads(json.dumps(self.plan))
+        plan["workpacks"][0]["verifier"] = {"verifier_id": "V1", "owner": "verifier-owner",
+            "code_ref": "contract.py", "code_sha256": hashlib.sha256(code.read_bytes()).hexdigest(),
+            "expected_ref": "expected.json", "expected_sha256": hashlib.sha256(expected.read_bytes()).hexdigest(),
+            "input_policy": "CAS_ONLY"}
+        return plan, expected
+
+    def _cas_scope(self):
+        staging = self.root / "staging"; staging.mkdir(exist_ok=True)
+        cas = self.root / "cas"; cas.mkdir(exist_ok=True)
+        scope = json.loads(json.dumps(self.scope))
+        scope.update(staging_root=str(staging), cas_root=str(cas))
+        return scope
+
+    def test_controller_checks_independent_verifier_hash_before_dispatch(self):
+        plan, expected = self._contract_plan()
+        prepared = self._prepare(self._cas_scope(), plan, "verify")
         result = AgentBuildController(self.store, self.program,
-                                      adapter_factory=lambda task, scope: adapter).advance(prepared["event_id"])
+                                      adapter_factory=lambda task, scope: StagingAdapter()).advance(prepared["event_id"])
         self.assertEqual(result["status"], "PLAN_CHECKS_ACCEPTED", result)
         finished = [row for row in self.store.list_events(self.program)
                     if row["event_type"] == "BUILD_ATTEMPT_FINISHED"][-1]["payload"]
         self.assertTrue(finished["verifier_identity"]["independent"])
+        self.assertEqual(finished["verifier_result"]["status"], "PASS")
         expected.write_text("tampered")
-        revision = len(self.store.list_events(self.program))
-        prepared2 = self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_PREPARED",
-            "payload": {"scope": self.scope, "plan": plan}}], expected_revision=revision,
-            idempotency_key="verify-prepare-2", created_at=now, require_new=True)[0]
-        self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_APPROVED",
-            "payload": {"prepared_event_id": prepared2["event_id"]}}], expected_revision=revision + 1,
-            idempotency_key="verify-approve-2", created_at=now, require_new=True)
+        prepared2 = self._prepare(self._cas_scope(), plan, "verify-2")
         result = AgentBuildController(self.store, self.program,
-                                      adapter_factory=lambda task, scope: FlakyAdapter(self.workspace)).advance(prepared2["event_id"])
+                                      adapter_factory=lambda task, scope: StagingAdapter()).advance(prepared2["event_id"])
         self.assertEqual(result["status"], "HELD_VERIFIER_IDENTITY", result)
+
+    def test_declared_verifier_contract_without_cas_is_held_not_skipped(self):
+        plan, _ = self._contract_plan()
+        prepared = self._prepare(self.scope, plan, "no-cas")
+        adapter = FlakyAdapter(self.workspace)
+        result = AgentBuildController(self.store, self.program,
+                                      adapter_factory=lambda task, scope: adapter).advance(prepared["event_id"])
+        self.assertEqual(result["status"], "HELD_VERIFIER_NOT_RUNNABLE", result)
+        self.assertEqual(adapter.calls, 0)
+        self.assertFalse(any(row["event_type"] == "BUILD_ATTEMPT_STARTED"
+                             and row["payload"]["prepared_event_id"] == prepared["event_id"]
+                             for row in self.store.list_events(self.program)))
+
+    def test_checker_changed_since_preparation_is_held_before_dispatch(self):
+        stale = {"check.py": {"size": 1, "sha256": "0" * 64}}
+        now = datetime.now(timezone.utc).isoformat()
+        revision = len(self.store.list_events(self.program))
+        prepared = self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_PREPARED",
+            "payload": {"scope": self.scope, "plan": self.plan, "verifier_files": stale}}],
+            expected_revision=revision, idempotency_key="stale-prepare", created_at=now, require_new=True)[0]
+        self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_APPROVED",
+            "payload": {"prepared_event_id": prepared["event_id"]}}], expected_revision=revision + 1,
+            idempotency_key="stale-approve", created_at=now, require_new=True)
+        adapter = FlakyAdapter(self.workspace)
+        result = AgentBuildController(self.store, self.program,
+                                      adapter_factory=lambda task, scope: adapter).advance(prepared["event_id"])
+        self.assertEqual(result["status"], "HELD_VERIFIER_IDENTITY", result)
+        self.assertEqual(adapter.calls, 0)
+
+    def test_checker_rewritten_during_attempt_blocks_instead_of_accepting(self):
+        class RewritingAdapter(FlakyAdapter):
+            def run(inner, request, *, before_dispatch, **hooks):
+                (self.verifier / "check.py").write_text("print('rewritten by the implementation')\n")
+                return super().run(request, before_dispatch=before_dispatch, **hooks)
+
+        adapter = RewritingAdapter(self.workspace, fail_first=False)
+        result = AgentBuildController(self.store, self.program,
+                                      adapter_factory=lambda task, scope: adapter).advance(self.prepared["event_id"])
+        self.assertEqual(result["status"], "HELD_VERIFIER_IDENTITY", result)
+        finished = [row for row in self.store.list_events(self.program)
+                    if row["event_type"] == "BUILD_ATTEMPT_FINISHED"][-1]["payload"]
+        self.assertEqual((finished["status"], finished["blocked_reason"]), ("BLOCKED", "VERIFIER_IDENTITY_DRIFT"))
+        self.assertFalse(finished["workpack_accepted"])
+
+    def test_scope_rejects_task_writable_binaries_and_mislabelled_sandbox(self):
+        inside = self.workspace / "dsh"; shutil.copy2(FAKE, inside)
+        inside.chmod(inside.stat().st_mode | stat.S_IXUSR)
+        scope = json.loads(json.dumps(self.scope))
+        scope["agents"]["dsh"]["executable"] = str(inside)
+        with self.assertRaisesRegex(ValueError, "must not be task-writable"):
+            validate_scope_13(self.plan, scope)
+        scope = json.loads(json.dumps(self.scope))
+        scope["executables"]["python"] = str(inside)
+        with self.assertRaisesRegex(ValueError, "must not be task-writable"):
+            validate_scope_13(self.plan, scope)
+        # A seatbelt label on a TRUSTED_HOST run would be a claim the run cannot honour.
+        scope = json.loads(json.dumps(self.scope))
+        scope["sandbox"]["provider"] = "seatbelt"
+        with self.assertRaisesRegex(ValueError, "TRUSTED_HOST execution runs unsandboxed"):
+            validate_scope_13(self.plan, scope)
+        # "none" without an explicit TRUSTED_HOST declaration stays test-only.
+        scope = json.loads(json.dumps(self.scope))
+        del scope["execution"]
+        with self.assertRaisesRegex(ValueError, "needs explicit execution.mode TRUSTED_HOST"):
+            validate_scope_13(self.plan, scope)
+        validate_scope_13(self.plan, scope, test_only=True)
+
+    def test_scope_requires_verifier_files_or_a_verifier_contract(self):
+        plan = json.loads(json.dumps(self.plan))
+        plan["workpacks"][0]["verification"] = [{"case_id": "C1", "argv": ["python", "-c", "pass"], "artifact_ids": ["PROOF"]}]
+        with self.assertRaisesRegex(ValueError, "verifier:// files or declare a verifier contract"):
+            validate_scope_13(self.plan | {"workpacks": plan["workpacks"]}, self.scope)
+        plan["workpacks"][0]["verifier"] = {"verifier_id": "V1", "owner": "o", "code_ref": "c.py",
+            "code_sha256": "0" * 64, "expected_ref": "e.json", "expected_sha256": "0" * 64}
+        validate_scope_13(plan, self.scope)
+        plan = json.loads(json.dumps(self.plan))
+        plan["workpacks"][0]["verification"][0]["argv"] = ["python", "verifier://missing.py"]
+        with self.assertRaisesRegex(ValueError, "verifier file is missing"):
+            validate_scope_13(plan, self.scope)
 
     def test_controller_requires_approval(self):
         other = self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_PREPARED",

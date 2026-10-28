@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shutil
 import stat
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -34,7 +35,8 @@ class FullAgentFlowTests(unittest.TestCase):
         self.dsh_home = self.root / "dsh-home"; (self.dsh_home / "foundry").mkdir(parents=True)
         (self.dsh_home / "foundry" / "deepseek.key").write_text("fake-full-flow-key\n")
         (self.dsh_home / "foundry" / "deepseek.key").chmod(0o600)
-        self.dsh = self.workspace / "dsh"; shutil.copy2(FAKE, self.dsh)
+        bin_dir = self.root / "bin"; bin_dir.mkdir()
+        self.dsh = bin_dir / "dsh"; shutil.copy2(FAKE, self.dsh)
         self.dsh.chmod(self.dsh.stat().st_mode | stat.S_IXUSR)
         self.ir = {
             "program_id": "P2-FULL-FLOW", "revision": 1,
@@ -52,15 +54,16 @@ class FullAgentFlowTests(unittest.TestCase):
                 "goal": "Write proof.txt.", "depends_on": [], "atom_ids": ["A1"],
                 "inputs": [{"kind": "SOURCE", "id": "BRIEF"}],
                 "artifacts": [{"artifact_id": "PROOF", "path": "proof.txt"}],
-                "verification": [{"case_id": "C1", "argv": ["true"], "artifact_ids": ["PROOF"]}]}]}
+                "verification": [{"case_id": "C1", "argv": ["python", "verifier://check.py"], "artifact_ids": ["PROOF"]}]}]}
         self.scope = {"scope_version": "1.3",
             "agents": {"dsh": {"adapter": "dsh-headless", "executable": str(self.dsh),
                                "dsh_home": str(self.dsh_home)}},
-            "sandbox": {"provider": "seatbelt", "network": {"agent_egress": "NONE", "task_network": "NONE"}},
+            "sandbox": {"provider": "none", "network": {"agent_egress": "NONE", "task_network": "NONE"}},
+            "execution": {"mode": "TRUSTED_HOST"},
             "usage_accounting": "UNKNOWN", "workspace_root": str(self.workspace),
             "source_read_roots": [str(self.source)], "verification_root": str(self.verifier),
             "task_write_roots": {"IMPLEMENT": [str(self.workspace)]},
-            "executables": {"true": "/usr/bin/true"}, "max_attempts": 3, "max_task_attempts": 2,
+            "executables": {"python": sys.executable}, "max_attempts": 3, "max_task_attempts": 2,
             "command_timeout_seconds": 30, "expires_at": "2099-01-01T00:00:00Z"}
         self.store = ControlEventStore(self.root / "control.sqlite3", storage_format="REVISION_V1")
         self.review = reviewed_document(self.source, path=self.source / "brief.md", source_id="BRIEF")
@@ -86,9 +89,24 @@ class FullAgentFlowTests(unittest.TestCase):
             "expected_revision": 4}, self.root / "control.sqlite3")
         self.assertEqual(result["status"], "PLAN_CHECKS_ACCEPTED", result)
         self.assertEqual(result["agent_controller"], "EXPERIMENTAL_1_3")
+        self.assertEqual((result["task_sandbox_provider"], result["fs_enforcement"]), ("trusted-host", "NONE"))
         self.assertEqual((self.workspace / "proof.txt").read_text(), "proof.txt")
         readback = read_build(self.root / "control.sqlite3", self.program)
         self.assertEqual([row["status"] for row in readback["attempts"]], ["ACCEPTED"], readback)
+        prepared = next(row for row in self.store.list_events(self.program)
+                        if row["event_type"] == "BUILD_AUTHORIZATION_PREPARED")
+        # The host-side preparation bound the checker bytes; the attempt reused them.
+        self.assertEqual(set(prepared["payload"]["verifier_files"]), {"check.py"})
+        finished = [row for row in self.store.list_events(self.program) if row["event_type"] == "BUILD_ATTEMPT_FINISHED"][-1]
+        self.assertEqual(finished["payload"]["checker_binding"], prepared["payload"]["verifier_files"])
+
+    def test_checker_edited_after_preparation_holds_dispatch(self):
+        prepared_id = self.build_events()
+        (self.verifier / "check.py").write_text("print('edited after the human reviewed it')\n")
+        result = apply_build_request("advance-build", {"program_id": self.program, "prepared_event_id": prepared_id,
+            "expected_revision": 4}, self.root / "control.sqlite3")
+        self.assertEqual(result["status"], "HELD_VERIFIER_IDENTITY", result)
+        self.assertFalse((self.workspace / "proof.txt").exists())
 
 
 if __name__ == "__main__":
