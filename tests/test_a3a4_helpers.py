@@ -24,6 +24,29 @@ class A3ReuseTests(unittest.TestCase):
             self.assertEqual(reusable_source_event(store, "P", "/root", [{"source_id": "S", "path": "a.md"}], snapshot)["event_id"], event["event_id"])
             self.assertIsNone(reusable_source_event(store, "P", "/root", [], snapshot))
 
+    def test_hashed_captures_are_found_by_digest_and_legacy_captures_by_comparison(self):
+        from unittest.mock import patch
+        from harness_foundry_factory.build_runtime import snapshot_digest
+        with tempfile.TemporaryDirectory() as d:
+            store = RevisionControlEventStore(Path(d) / "control.sqlite3")
+            manifest = [{"source_id": "S", "path": "a.md"}]
+            legacy_snapshot = {"schema_version": "1.0", "sources": [{"source_id": "S", "text": "legacy"}]}
+            hashed_snapshot = {"schema_version": "1.0", "sources": [{"source_id": "S", "text": "hashed"}]}
+            legacy = store.append_batch("P", [{"event_type": "BUILD_SOURCES_CAPTURED", "payload": {
+                "source_root": "/root", "manifest": manifest, "snapshot": legacy_snapshot}}],
+                expected_revision=0, idempotency_key="legacy", created_at="2026-10-27T00:00:00Z")[0]
+            hashed = store.append_batch("P", [{"event_type": "BUILD_SOURCES_CAPTURED", "payload": {
+                "source_root": "/root", "manifest": manifest, "snapshot": hashed_snapshot,
+                "snapshot_sha256": snapshot_digest(hashed_snapshot)}}],
+                expected_revision=1, idempotency_key="hashed", created_at="2026-10-27T00:00:00Z")[0]
+            self.assertEqual(reusable_source_event(store, "P", "/root", manifest, hashed_snapshot)["event_id"], hashed["event_id"])
+            self.assertEqual(reusable_source_event(store, "P", "/root", manifest, legacy_snapshot)["event_id"], legacy["event_id"])
+            # A digest match alone never wins: identity fields are still compared.
+            self.assertIsNone(reusable_source_event(store, "P", "/elsewhere", manifest, hashed_snapshot))
+            # The digest lookup happens inside the store; the full typed read is not used.
+            with patch.object(RevisionControlEventStore, "list_events_by_types", side_effect=AssertionError("full read")):
+                self.assertEqual(reusable_source_event(store, "P", "/root", manifest, hashed_snapshot)["event_id"], hashed["event_id"])
+
 
 class A4HelperTests(unittest.TestCase):
     def view(self):

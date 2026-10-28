@@ -8,6 +8,7 @@ Public build/approval CLI exposure and real-model qualification are separate.
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import hashlib
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -129,20 +130,47 @@ def _local_argv(argv, scope):
     return command
 
 
+def snapshot_digest(snapshot):
+    """Content identity of a source snapshot; recorded with the capture so reuse
+    can be decided without deserializing every stored body."""
+    return hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
+
+
+def _matching_capture(event, source_root, manifest, snapshot, proposal_event_id):
+    payload = event["payload"]
+    return (payload.get("source_root") == str(source_root)
+            and payload.get("manifest") == manifest
+            and payload.get("snapshot") == snapshot
+            and (proposal_event_id is None or payload.get("proposal_event_id") == proposal_event_id))
+
+
 def reusable_source_event(store, program_id, source_root, manifest, snapshot, proposal_event_id=None):
-    """Return an existing identical source capture, if its identity and bytes match."""
-    for event in reversed(store.list_events_by_types(program_id, ("BUILD_SOURCES_CAPTURED",))):
-        payload = event["payload"]
-        if (payload.get("source_root") == str(source_root)
-                and payload.get("manifest") == manifest
-                and payload.get("snapshot") == snapshot
-                and (proposal_event_id is None or payload.get("proposal_event_id") == proposal_event_id)):
+    """Return an existing identical source capture, if its identity and bytes match.
+
+    Captures recorded with ``snapshot_sha256`` are located by digest inside the
+    store; only candidates with the same digest are compared byte for byte.
+    Captures from before the digest existed are compared the old way.
+    """
+    digest = snapshot_digest(snapshot)
+    hashed = store.list_events_by_payload_field(program_id, "BUILD_SOURCES_CAPTURED", "snapshot_sha256", digest)
+    for event in reversed(hashed):
+        if _matching_capture(event, source_root, manifest, snapshot, proposal_event_id):
+            return event
+    legacy = store.list_events_by_payload_field(program_id, "BUILD_SOURCES_CAPTURED", "snapshot_sha256", None)
+    for event in reversed(legacy):
+        if _matching_capture(event, source_root, manifest, snapshot, proposal_event_id):
             return event
     return None
 
 
 def record_source_snapshot(store, program_id, proposal_event_id, source_root, manifest, *,
                            expected_revision, idempotency_key, created_at, reuse_unchanged=True):
+    """Capture the declared sources, or return the identical earlier capture.
+
+    Reuse is still a CAS operation: the caller's ``expected_revision`` must
+    equal the current stream head, exactly as an append would require, and the
+    returned event carries ``reused: True`` so callers report no write.
+    """
     proposal = _proposal_event(store, program_id, proposal_event_id)
     review = validate_build_review(proposal["payload"].get("document_review"))
     root = _directory(str(source_root))
@@ -153,9 +181,14 @@ def record_source_snapshot(store, program_id, proposal_event_id, source_root, ma
     if reuse_unchanged:
         existing = reusable_source_event(store, program_id, root, manifest, snapshot, proposal_event_id)
         if existing is not None:
-            return existing
+            head = store.event_count(program_id)
+            if expected_revision != head:
+                raise RevisionConflictError("control event stream changed before source reuse",
+                                            details={"expected_revision": expected_revision, "actual_revision": head})
+            return {**existing, "reused": True}
     return store.append_batch(program_id, [{"event_type": "BUILD_SOURCES_CAPTURED", "payload": {
-        "proposal_event_id": proposal_event_id, "source_root": str(root), "manifest": manifest, "snapshot": snapshot}}],
+        "proposal_event_id": proposal_event_id, "source_root": str(root), "manifest": manifest,
+        "snapshot": snapshot, "snapshot_sha256": snapshot_digest(snapshot)}}],
         expected_revision=expected_revision, idempotency_key=idempotency_key, created_at=created_at,
         exclusive_program=True)[0]
 

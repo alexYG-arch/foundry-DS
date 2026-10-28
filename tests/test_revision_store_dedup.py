@@ -52,6 +52,46 @@ class DedupStoreTests(unittest.TestCase):
             self.assertEqual(new.list_events("P")[0]["payload"]["snapshot"]["sources"][0]["text"], TEXT)
             self.assertEqual(new.idempotent_events("P", "k")[0]["payload"]["snapshot"]["sources"][0]["text"], TEXT)
 
+    def test_migration_streams_in_batches_and_verifies_idempotency_replays(self):
+        from harness_foundry_factory.revision_store import RevisionControlEventStore
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / "source.sqlite3"; target = Path(d) / "target.sqlite3"
+            old = RevisionControlEventStore(source)
+            for index in range(7):
+                text = f"body-{index % 3}\n"   # three distinct texts across seven captures
+                snap = snapshot(); snap["sources"][0]["text"] = text
+                old.append_batch("P", [{"event_type": "BUILD_SOURCES_CAPTURED", "payload": {"snapshot": snap}}],
+                    expected_revision=index, idempotency_key=f"k{index}", created_at="2026-10-27T00:00:00Z")
+            old.append_batch("Q", [{"event_type": "X", "payload": {"n": 1}}],
+                expected_revision=0, idempotency_key="q", created_at="2026-10-27T00:00:00Z")
+            result = migrate_to_dedup(source, target, batch_size=2)
+            self.assertEqual(result["status"], "MIGRATED")
+            self.assertEqual(result["contents"], 3)
+            self.assertEqual(result["verification"]["events"], 8)
+            self.assertEqual(result["verification"]["idempotency_replays"], 8)
+            self.assertTrue(result["verification"]["streaming"])
+            new = DedupRevisionControlEventStore(target, read_only=True)
+            self.assertEqual([row["payload"]["snapshot"]["sources"][0]["text"] for row in new.iter_events("P", batch_size=3)],
+                             [f"body-{index % 3}\n" for index in range(7)])
+            self.assertEqual(new.idempotent_events("P", "k4")[0]["payload"]["snapshot"]["sources"][0]["text"], "body-1\n")
+            with sqlite3.connect(target) as connection:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM control_source_content").fetchone()[0], 3)
+
+    def test_migration_verification_detects_a_divergent_idempotency_replay(self):
+        from harness_foundry_factory.revision_store import RevisionControlEventStore
+        from harness_foundry_factory.revision_store_dedup import verify_migration
+        from harness_foundry_factory.build_types import RequestValidationError
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / "source.sqlite3"; target = Path(d) / "target.sqlite3"
+            old = RevisionControlEventStore(source)
+            old.append_batch("P", [{"event_type": "BUILD_SOURCES_CAPTURED", "payload": {"snapshot": snapshot()}}],
+                expected_revision=0, idempotency_key="k", created_at="2026-10-27T00:00:00Z")
+            migrate_to_dedup(source, target)
+            with sqlite3.connect(target) as connection:
+                connection.execute("UPDATE control_idempotency SET events_json = '[]' WHERE idempotency_key = 'k'")
+            with self.assertRaisesRegex(RequestValidationError, "idempotency replay differs"):
+                verify_migration(source, target)
+
     def test_migration_can_copy_external_observation_dirs(self):
         from harness_foundry_factory.revision_store import RevisionControlEventStore
         with tempfile.TemporaryDirectory() as d:

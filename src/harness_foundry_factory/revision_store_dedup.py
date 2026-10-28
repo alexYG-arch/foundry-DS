@@ -31,12 +31,14 @@ def _digest(text: str) -> str:
 
 
 
-def migrate_to_dedup(source_path, target_path, *, copy_external=False):
+def migrate_to_dedup(source_path, target_path, *, copy_external=False, batch_size=500):
     """Offline copy V1 -> dedup format; source is opened read-only and untouched.
 
     Caller must stop writers and choose an absent target. The copy uses the
     SQLite backup API (including WAL) and preserves event IDs, revisions,
-    idempotency keys and event order.
+    idempotency keys and event order. Rows are rewritten in ``batch_size``
+    batches and content is inserted as it is found, so memory stays bounded
+    by the batch, not by the store.
     """
     import sqlite3
     from .build_types import canonical_json
@@ -46,7 +48,10 @@ def migrate_to_dedup(source_path, target_path, *, copy_external=False):
     target = Path(target_path).resolve()
     if not source.is_file() or target.exists():
         raise RequestValidationError("migration requires an existing source and absent target")
+    if type(batch_size) is not int or batch_size <= 0:
+        raise RequestValidationError("batch_size must be positive")
     source_connection = sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)
+    content_count = 0
     try:
         if source_connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='control_source_content'").fetchone():
@@ -57,34 +62,58 @@ def migrate_to_dedup(source_path, target_path, *, copy_external=False):
             target_connection.execute(_CONTENT_TABLE)
             for name in CONTROL_EVENT_STORE_TRIGGER_SQL:
                 target_connection.execute(f"DROP TRIGGER IF EXISTS {name}")
-            contents = {}
-            for event_id, payload_json in list(target_connection.execute(
-                    "SELECT event_id, payload_json FROM control_events").fetchall()):
-                payload, found = DedupRevisionControlEventStore._compact(json.loads(payload_json))
-                contents.update(found)
-                target_connection.execute("UPDATE control_events SET payload_json = ? WHERE event_id = ?",
-                                          (canonical_json(payload), event_id))
-            for program_id, key, request_json, events_json in list(target_connection.execute(
-                    "SELECT program_id, idempotency_key, request_json, events_json FROM control_idempotency").fetchall()):
-                request = json.loads(request_json)
-                compact_entries = []
-                for entry in request["entries"]:
-                    payload, found = DedupRevisionControlEventStore._compact(entry["payload"])
-                    contents.update(found)
-                    compact_entries.append({"event_type": entry["event_type"], "payload": payload})
-                events = []
-                for event in json.loads(events_json):
-                    payload, found = DedupRevisionControlEventStore._compact(event["payload"])
-                    contents.update(found)
-                    events.append({**event, "payload": payload})
-                target_connection.execute(
-                    "UPDATE control_idempotency SET request_json = ?, events_json = ? WHERE program_id = ? AND idempotency_key = ?",
-                    (canonical_json({"expected_revision": request["expected_revision"], "entries": compact_entries}),
-                     canonical_json(events), program_id, key))
-            for digest, text in contents.items():
-                target_connection.execute(
-                    "INSERT OR REPLACE INTO control_source_content(content_sha256, text, byte_length) VALUES (?, ?, ?)",
-                    (digest, text, len(text.encode("utf-8"))))
+            target_connection.commit()
+
+            def store_contents(found):
+                nonlocal content_count
+                for digest, text in found.items():
+                    inserted = target_connection.execute(
+                        "INSERT OR IGNORE INTO control_source_content(content_sha256, text, byte_length) VALUES (?, ?, ?)",
+                        (digest, text, len(text.encode("utf-8")))).rowcount
+                    content_count += max(inserted, 0)
+
+            # Events: walk by sequence in bounded batches, committing each batch,
+            # so the migration never holds the whole store (or every unique
+            # text) in memory.
+            last = 0
+            while True:
+                rows = target_connection.execute(
+                    "SELECT sequence, event_id, payload_json FROM control_events WHERE sequence > ? "
+                    "ORDER BY sequence LIMIT ?", (last, batch_size)).fetchall()
+                if not rows:
+                    break
+                for sequence, event_id, payload_json in rows:
+                    payload, found = DedupRevisionControlEventStore._compact(json.loads(payload_json))
+                    store_contents(found)
+                    target_connection.execute("UPDATE control_events SET payload_json = ? WHERE event_id = ?",
+                                              (canonical_json(payload), event_id))
+                    last = sequence
+                target_connection.commit()
+            last = 0
+            while True:
+                rows = target_connection.execute(
+                    "SELECT rowid, program_id, idempotency_key, request_json, events_json FROM control_idempotency "
+                    "WHERE rowid > ? ORDER BY rowid LIMIT ?", (last, batch_size)).fetchall()
+                if not rows:
+                    break
+                for rowid, program_id, key, request_json, events_json in rows:
+                    request = json.loads(request_json)
+                    compact_entries = []
+                    for entry in request["entries"]:
+                        payload, found = DedupRevisionControlEventStore._compact(entry["payload"])
+                        store_contents(found)
+                        compact_entries.append({"event_type": entry["event_type"], "payload": payload})
+                    events = []
+                    for event in json.loads(events_json):
+                        payload, found = DedupRevisionControlEventStore._compact(event["payload"])
+                        store_contents(found)
+                        events.append({**event, "payload": payload})
+                    target_connection.execute(
+                        "UPDATE control_idempotency SET request_json = ?, events_json = ? WHERE program_id = ? AND idempotency_key = ?",
+                        (canonical_json({"expected_revision": request["expected_revision"], "entries": compact_entries}),
+                         canonical_json(events), program_id, key))
+                    last = rowid
+                target_connection.commit()
             for sql in CONTROL_EVENT_STORE_TRIGGER_SQL.values():
                 target_connection.execute(sql)
             target_connection.commit()
@@ -105,13 +134,14 @@ def migrate_to_dedup(source_path, target_path, *, copy_external=False):
                     raise RequestValidationError(f"migration target external dir already exists: {target_dir}")
                 shutil.copytree(source_dir, target_dir)
                 external[suffix] = {"source": str(source_dir), "target": str(target_dir)}
-    verification = verify_migration(source, target)
+    verification = verify_migration(source, target, batch_size=batch_size)
     return {"status": "MIGRATED", "source": str(source), "target": str(target),
-            "contents": len(contents), "external": external, "verification": verification}
+            "contents": content_count, "external": external, "verification": verification}
 
 
-def verify_migration(source_path, target_path):
-    """Compare source V1 and target dedup by event identity and hydrated payloads."""
+def verify_migration(source_path, target_path, *, batch_size=500):
+    """Compare source V1 and target dedup by event identity, hydrated payloads
+    and idempotency replays, streaming both sides in batches."""
     from .revision_store import RevisionControlEventStore
     source = RevisionControlEventStore(source_path, read_only=True, storage_format="REVISION_V1")
     target = DedupRevisionControlEventStore(target_path, read_only=True)
@@ -120,14 +150,25 @@ def verify_migration(source_path, target_path):
     target_ids = sorted(target.list_program_ids())
     if source_ids != target_ids:
         raise RequestValidationError("migration Program set differs")
+    events = 0
+    replays = 0
     for program in source_ids:
-        old = source.list_events(program)
-        new = target.list_events(program)
-        if [(row["event_id"], row["stream_revision"], row["event_type"], row["payload"]) for row in old] != [
-                (row["event_id"], row["stream_revision"], row["event_type"], row["payload"]) for row in new]:
-            raise RequestValidationError(f"migration event projection differs for {program}")
-    return {"status": "PASS", "programs": source_ids,
-            "events": sum(len(source.list_events(program)) for program in source_ids)}
+        if source.event_count(program) != target.event_count(program):
+            raise RequestValidationError(f"migration event count differs for {program}")
+        for old in source.iter_events(program, batch_size=batch_size):
+            new = target.get_event(program, old["event_id"])
+            if new is None or any(old[key] != new[key] for key in ("stream_revision", "event_type", "payload", "created_at")):
+                raise RequestValidationError(f"migration event projection differs for {program}")
+            events += 1
+        source_keys = source.list_idempotency_keys(program)
+        if source_keys != target.list_idempotency_keys(program):
+            raise RequestValidationError(f"migration idempotency key set differs for {program}")
+        for key in source_keys:
+            if source.idempotent_events(program, key) != target.idempotent_events(program, key):
+                raise RequestValidationError(f"migration idempotency replay differs for {program}")
+            replays += 1
+    return {"status": "PASS", "programs": source_ids, "events": events, "idempotency_replays": replays,
+            "streaming": True}
 
 
 class DedupRevisionControlEventStore(RevisionControlEventStore):
@@ -232,6 +273,13 @@ class DedupRevisionControlEventStore(RevisionControlEventStore):
 
     def list_events_by_types(self, program_id, event_types, **kwargs):
         events = super().list_events_by_types(program_id, event_types, **kwargs)
+        return self._hydrate_rows(events)
+
+    def list_events_by_payload_field(self, program_id, event_type, field, value, **kwargs):
+        events = super().list_events_by_payload_field(program_id, event_type, field, value, **kwargs)
+        return self._hydrate_rows(events)
+
+    def _hydrate_rows(self, events):
         with self._connection() as connection:
             return [{**event, "payload": self._hydrate(event["payload"], connection)} for event in events]
 

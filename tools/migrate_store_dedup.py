@@ -19,9 +19,12 @@ def main(argv=None):
     parser.add_argument("target")
     parser.add_argument("--copy-observations", action="store_true",
                         help="copy .commands/.verifiers siblings; source stays read-only")
+    parser.add_argument("--batch-size", type=int, default=500,
+                        help="rows rewritten per transaction; bounds memory on large stores")
     args = parser.parse_args(argv)
     try:
-        result = migrate_to_dedup(args.source, args.target, copy_external=args.copy_observations)
+        result = migrate_to_dedup(args.source, args.target, copy_external=args.copy_observations,
+                                  batch_size=args.batch_size)
     except Exception as exc:
         result = {"status": "FAIL", "error": f"{type(exc).__name__}: {exc}"}
     print(json.dumps(result, ensure_ascii=False, indent=2))

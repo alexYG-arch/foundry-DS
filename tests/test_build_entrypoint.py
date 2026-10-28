@@ -336,6 +336,31 @@ class BuildEntrypointTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(self.cli("read-build")["stream_revision"], 1)
 
+    def test_source_reuse_keeps_cas_and_reports_no_write(self):
+        proposal = self.mutation("record-build-plan", self.f.request)
+        capture = {"program_id": self.f.program, "proposal_event_id": proposal["event_id"],
+                   "source_root": str(self.f.source), "manifest": [{"source_id": "PROJECT-BRIEF", "path": "brief.md"}]}
+        first = self.mutation("capture-build-sources", capture)
+        self.assertEqual(first["status"], "BUILD_SOURCES_CAPTURED_NOT_SEMANTICALLY_ACCEPTED")
+        self.assertTrue(first["control_state_write"])
+        # Identical sources under the same proposal reuse the earlier capture:
+        # nothing is written, and stream_revision is the current head.
+        reused = self.mutation("capture-build-sources", capture)
+        self.assertEqual(reused["status"], "BUILD_SOURCES_REUSED_NOT_SEMANTICALLY_ACCEPTED")
+        self.assertTrue(reused["reused"])
+        self.assertFalse(reused["control_state_write"])
+        self.assertEqual(reused["event_id"], first["event_id"])
+        self.assertEqual(reused["reused_event_revision"], first["stream_revision"])
+        self.assertEqual(reused["stream_revision"], self.cli("read-build")["stream_revision"])
+        self.assertEqual(len(self.cli("read-build")["sources"]), 1)
+        # A stale caller is still told the stream moved, exactly as an append would.
+        stale = self.cli("capture-build-sources", {**capture, "expected_revision": 0, "idempotency_key": "stale"}, expected=4)
+        self.assertEqual(stale["error"]["code"], "STATE_REVISION_CONFLICT")
+        # Opting out of reuse appends a second, hashed capture.
+        fresh = self.mutation("capture-build-sources", {**capture, "reuse_unchanged": False})
+        self.assertEqual(fresh["status"], "BUILD_SOURCES_CAPTURED_NOT_SEMANTICALLY_ACCEPTED")
+        self.assertEqual(len(self.cli("read-build")["sources"]), 2)
+
     def test_generic_cli_does_not_load_legacy_production_service(self):
         original_import = __import__
 

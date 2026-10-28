@@ -276,6 +276,16 @@ def apply_build_request(command, request, control_db):
     elif command == "capture-build-sources":
         event = record_source_snapshot(store, program, request["proposal_event_id"], request["source_root"],
                                        request["manifest"], reuse_unchanged=request.get("reuse_unchanged", True), **kwargs)
+        if event.get("reused"):
+            # An identical earlier capture was returned: nothing was written, and
+            # the caller's next expected_revision is the current head, not the
+            # old event's revision.
+            return {"status": "BUILD_SOURCES_REUSED_NOT_SEMANTICALLY_ACCEPTED", "program_id": program,
+                    "event_id": event["event_id"], "reused": True,
+                    "reused_event_revision": event["stream_revision"],
+                    "stream_revision": store.event_count(program), "readback": None,
+                    "control_state_write": False, "target_write": False, "execution_started": False,
+                    "harness_e2e_verified": False}
         status = "BUILD_SOURCES_CAPTURED_NOT_SEMANTICALLY_ACCEPTED"
     elif command == "prepare-build-authorization":
         event = prepare_build_authorization(store, program, request["proposal_event_id"], request["source_event_id"], request["scope"],

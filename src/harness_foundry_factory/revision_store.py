@@ -321,6 +321,60 @@ class RevisionControlEventStore:
             rows = connection.execute(sql, args).fetchall()
         return [self._row_event(row) for row in rows]
 
+    def list_events_by_payload_field(self, program_id, event_type, field, value, *, limit=None):
+        """Events of one type whose top-level payload ``field`` equals ``value``.
+
+        ``value=None`` selects events where the field is absent/null. The match
+        runs inside SQLite (``json_extract``), so callers can locate a capture
+        by a recorded digest without deserializing every stored body.
+        """
+        if not isinstance(event_type, str) or not event_type:
+            raise RequestValidationError("control event type must be nonempty text")
+        if not isinstance(field, str) or not field or not field.replace("_", "").isalnum():
+            raise RequestValidationError("payload field must be a simple identifier")
+        if value is not None and not isinstance(value, (str, int)):
+            raise RequestValidationError("payload field value must be text or an integer")
+        sql = f"SELECT * FROM control_events WHERE program_id = ? AND event_type = ? AND json_extract(payload_json, '$.{field}')"
+        args = [program_id, event_type]
+        if value is None:
+            sql += " IS NULL"
+        else:
+            sql += " = ?"; args.append(value)
+        sql += " ORDER BY stream_revision"
+        if limit is not None:
+            if type(limit) is not int or limit <= 0:
+                raise RequestValidationError("limit must be positive")
+            sql += " LIMIT ?"; args.append(limit)
+        with self._connection() as connection:
+            rows = connection.execute(sql, args).fetchall()
+        return [self._row_event(row) for row in rows]
+
+    def iter_events(self, program_id, *, batch_size=500):
+        """Yield a Program's events in revision order without holding them all."""
+        if type(batch_size) is not int or batch_size <= 0:
+            raise RequestValidationError("batch_size must be positive")
+        after = 0
+        while True:
+            with self._connection() as connection:
+                rows = connection.execute(
+                    "SELECT * FROM control_events WHERE program_id = ? AND stream_revision > ? "
+                    "ORDER BY stream_revision LIMIT ?", (program_id, after, batch_size)).fetchall()
+            if not rows:
+                return
+            for event in self._hydrate_rows([self._row_event(row) for row in rows]):
+                yield event
+            after = int(rows[-1]["stream_revision"])
+
+    def _hydrate_rows(self, events):
+        """Store-format hook for batched readers; default returns events unchanged."""
+        return events
+
+    def list_idempotency_keys(self, program_id):
+        with self._connection() as connection:
+            return [str(row[0]) for row in connection.execute(
+                "SELECT idempotency_key FROM control_idempotency WHERE program_id = ? ORDER BY idempotency_key",
+                (program_id,))]
+
     def list_events(self, program_id):
         with self._connection() as connection:
             rows = connection.execute(
