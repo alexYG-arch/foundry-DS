@@ -974,6 +974,8 @@ class BuildResourceIntegrationTests(unittest.TestCase):
             controller.advance(fixture.prepared_id)
         fixture.runner.after_run = None
         result = controller.advance(fixture.prepared_id)
+        if result["status"] != "PLAN_CHECKS_ACCEPTED":
+            print("RECOVERY_RESULT=" + json.dumps(result, ensure_ascii=False, default=str)[:2500], flush=True)
         self.assertEqual(result["status"], "PLAN_CHECKS_ACCEPTED", result)
         self.assertEqual(len(fixture.runner.invocations), 5, "no implementation or completed check redispatch")
         self.assertEqual(len(fixture.events("BUILD_ATTEMPT_STARTED")), 2)
