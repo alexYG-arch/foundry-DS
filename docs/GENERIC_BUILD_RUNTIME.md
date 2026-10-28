@@ -180,9 +180,31 @@ JSON 字符串/键及普通附件脱敏后归档。完成 capture 的 `credentia
   `verifier://check.py` 解析到范围中的验证目录；资源模式使用 prepare 生成的受保护副本，旧模式沿用外部验证目录。
   参数中的 `executable://NAME` 只使用范围中已声明的原始执行器路径，使检查器可显式
   传给子进程；未知绑定在范围准备和运行重规划时拒绝，保留 venv 选择，不新增权限。
-  适配器在能力探测之后、真正派发之前再次检查权限；无沙箱能力时不降级直跑。
+  适配器在能力探测之后、真正派发之前再次检查权限。按 [ADR-0004](decisions/ADR-0004-CONTRACT-INDEPENDENCE.md)，
+  OS 沙箱是可选加固而不是基线：Codex 原生接收器沿用其沙箱；Plan 1.3 的 `TRUSTED_HOST`
+  执行模式直接运行命令，读写域只被记录和事后核对，不被执行层阻止。实际模式写入 attempt
+  事件与结果（`execution_mode`、`fs_enforcement`、`task_sandbox_provider`、`assurance`），
+  结论必须以这些字段为准，不得把无沙箱运行写成沙箱 PASS。
 - 独立性指“实施不能改写控制器、判定代码或判定执行器”，不是第三方认证。宿主
   仍须为 Case 选择能验证实际行为的可信程序；一个无意义的 exit 0 检查不是业务证明。
+
+#### TRUSTED_HOST 下的实际保证
+
+无沙箱基线下，下面这些是机械保证：验收只由控制器追加；verifier 目录在工作区外且声明的
+执行器/接收器/agent 二进制不在任务写域；准备时记录 `verifier_files`（被引用文件）与
+`verifier_tree`（整个 verifier 目录的文件清单，排除解释器/工具缓存），派发与验收前复核，
+任何检查器、辅助模块或 fixture 的改动都停止派发；声明产物按字节身份核对。
+
+下面这些在无沙箱基线下只能事后检测，不能阻止：实施进程读取 verifier 目录、改写未被
+清单覆盖的位置、直接向控制库 INSERT、写入 CAS。需要阻止时选用可选加固
+（独立 UID、seatbelt/bwrap、VM）。系统不保证也不核实作者/模型独立：1.3 的
+`owner_independence`（`SAME_OWNER` / `DISTINCT` / `UNDECLARED`）只记录声明的
+producer 与 verifier owner 是否相同，1.2 没有 owner 声明。
+
+修复循环是刻意保留的“校验→生成”信息通道。检查器若在 JSON 判定中区分
+`public_reason` 与 `private_detail`，回灌给实施方的 `repair_history` / 1.3 `feedback`
+只包含 public 字段（`feedback_projection: PUBLIC_REASON_ONLY`）；未区分的检查器沿用原有
+截断的原始输出。控制器自己的事件记录仍保存完整判定。
 
 模型服务接入复用原生配置读取。新 CODEX 请求未指定模型、推理强度或策略时，准备入口
 默认保存逐命令跟随全局模型/强度的策略；显式模型仍固定，也可读取默认后冻结用于对照。

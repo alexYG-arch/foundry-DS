@@ -25,8 +25,9 @@ from .sandbox_seatbelt import SeatbeltSandboxProvider
 from .sandbox_bwrap import BubblewrapSandboxProvider
 from .sandbox_trusted import TrustedHostProvider
 from .scope13 import (agent_read_roots, assurance_label, execution_mode, fs_enforcement,
-                      validate_scope_13, verifier_files)
+                      owner_independence, validate_scope_13, verifier_files)
 from .artifacts import ingest as ingest_artifacts
+from harness_foundry_factory.build_check_protocol import public_feedback
 from .verifier import VerifierContract, VerifierContractError
 from .verifier_runner import run_verifier
 
@@ -184,6 +185,8 @@ class AgentBuildController:
                             "artifact": artifact.get("path"), "execution_started": False,
                             "next_action": "EXPLICIT_REBUILD_PLAN", "harness_e2e_verified": False}
         used = 0
+        ownership_labels = {row["payload"]["owner_independence"] for row in finished.values()
+                            if row["payload"].get("status") == "ACCEPTED" and "owner_independence" in row["payload"]}
         for task in plan["workpacks"]:
             if task["workpack_id"] in accepted:
                 continue
@@ -211,6 +214,10 @@ class AgentBuildController:
                             "diagnostic": "verifier contract requires staging_root and cas_root (CAS_ONLY inputs)",
                             "next_action": "CONFIGURE_STAGING_AND_CAS", "execution_started": False,
                             "harness_e2e_verified": False}
+            # Recorded, not enforced: the system cannot know who wrote either side.
+            ownership = {"owner_independence": owner_independence(
+                scope, task, verifier_contract.owner if verifier_contract is not None else None)}
+            ownership_labels.add(ownership["owner_independence"])
             task_attempts = 0
             feedback = None
             while True:
@@ -231,7 +238,7 @@ class AgentBuildController:
                            "proposal_event_id": prepared["payload"].get("proposal_event_id"),
                            "budget_workpack_ids": owners, "executor": "AGENT",
                            "adapter": task["agent"]["adapter"],
-                           "checker_binding": checker_binding, **enforcement,
+                           "checker_binding": checker_binding, **enforcement, **ownership,
                        **({"verifier_identity": verifier_identity} if verifier_identity is not None else {})}
                 self.store.append_batch(self.program_id, [{"event_type": "BUILD_ATTEMPT_STARTED",
                     "payload": started}], expected_revision=len(events),
@@ -334,8 +341,10 @@ class AgentBuildController:
                             "verification": verification, "accepted_workpacks": accepted,
                             "attempts_used": used, "execution_started": True,
                             "harness_e2e_verified": False}
-                feedback = str({"artifact_error": artifact_error,
-                                "verification": verification})[:2000]
+                # Checkers that separate public_reason from private_detail
+                # feed only the public part back to the producer.
+                projected = [{**row, "result": public_feedback(row["result"]) or row["result"]} for row in verification]
+                feedback = str({"artifact_error": artifact_error, "verification": projected})[:2000]
                 if task_attempts < scope["max_task_attempts"] and used < scope["max_attempts"]:
                     self.store.append_batch(self.program_id, [{
                         "event_type": "BUILD_AGENT_REPAIR_REQUESTED",
@@ -354,4 +363,5 @@ class AgentBuildController:
         return {"status": "PLAN_CHECKS_ACCEPTED", "accepted_workpacks": accepted,
                 "attempts_used": used, "agent_controller": "EXPERIMENTAL_1_3",
                 "agent_sandbox_enforcement": agent_sandbox, **enforcement,
+                "owner_independence": sorted(ownership_labels) or ["UNDECLARED"],
                 "harness_e2e_verified": False}

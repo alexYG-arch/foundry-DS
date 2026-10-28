@@ -1,6 +1,36 @@
 """Public per-Case interface facts; no private oracle, credentials or authority."""
 
 from copy import deepcopy
+import json
+
+FEEDBACK_PUBLIC_KEYS = ("status", "failure_kind", "public_reason", "repair_artifact_ids", "case_id")
+FEEDBACK_RESULT_KEYS = ("status", "failure_domain", "automatic_retry_allowed", "repair_artifact_ids")
+
+
+def public_feedback(result):
+    """Project a verifier result for the producer's next attempt.
+
+    The repair loop is a deliberate channel from the checker to the
+    implementation. A checker that separates ``public_reason`` from
+    ``private_detail`` in its JSON verdict gets only the public fields fed
+    back; its raw stdout/stderr (which may contain expected values or private
+    fixtures) is withheld. Verifiers without that separation keep the existing
+    truncated raw feedback, so nothing changes until a checker opts in.
+    Returns ``None`` when no projection applies.
+    """
+    stdout = result.get("stdout") if isinstance(result, dict) else None
+    if not isinstance(stdout, str) or result.get("stdout_truncated", result.get("output_truncated", False)):
+        return None
+    try:
+        verdict = json.loads(stdout)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(verdict, dict) or "public_reason" not in verdict:
+        return None
+    public = {key: verdict[key] for key in FEEDBACK_PUBLIC_KEYS if key in verdict}
+    return {**{key: result[key] for key in FEEDBACK_RESULT_KEYS if key in result},
+            "stdout": json.dumps(public, ensure_ascii=False), "stderr": None,
+            "feedback_projection": "PUBLIC_REASON_ONLY"}
 
 
 CHECKER_GUIDANCE = (

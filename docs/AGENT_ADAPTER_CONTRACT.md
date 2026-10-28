@@ -38,12 +38,17 @@
 | 标签 | 含义 |
 |---|---|
 | `CONTRACT_INDEPENDENCE` | 默认；模块/负责人/证据/acceptance 独立 |
+| `CONTRACT_INDEPENDENCE_DETECT_ONLY` | 控制器对无文件系统执行（`fs_enforcement=NONE`，即 `TRUSTED_HOST` / `none`）的 attempt 记录的限定形式：读写域边界只能事后检测（字节身份、清单、产物核对），不能阻止 |
 | `CONTRACT_PLUS_UID` | 额外独立 OS 用户 |
 | `CONTRACT_PLUS_VM` | 额外 VM/容器 |
-| `CONTRACT_PLUS_SANDBOX` | 额外 seatbelt/bwrap |
+| `CONTRACT_PLUS_SANDBOX` | 额外 seatbelt/bwrap；控制器在 `fs_enforcement=SANDBOX` 时记录此标签 |
 | `SECURITY_NOT_CLAIMED` | 不声称防恶意 agent |
 
-结论中必须写实际模式；没有 sandbox 不能写 `sandbox_enforcement=PASS`。
+结论中必须写实际模式；没有 sandbox 不能写 `sandbox_enforcement=PASS`。1.3 控制器把实际
+provider 推导出的 `execution_mode`、`fs_enforcement`、`assurance`、`task_sandbox_provider`
+以及 scope 声明的 `declared_fs_enforcement` / `declared_assurance` 一起写入 `BUILD_ATTEMPT_*`
+事件；两组字段不一致时以实际为准。`execution.mode=TRUSTED_HOST` 要求 `sandbox.provider=none`，
+反之 `none` 没有显式 `TRUSTED_HOST` 只允许测试。
 
 ---
 
@@ -206,6 +211,17 @@ dsh --profile headless --json [--session-id <id>] -
 ```
 
 - verifier 结果不是 acceptance；controller 决定。
+- 可选 `public_reason` / `private_detail`：声明了 `public_reason` 的判定，回灌给 producer 的
+  反馈只含 `status`、`failure_kind`、`public_reason`、`repair_artifact_ids`、`case_id`
+  （`feedback_projection: PUBLIC_REASON_ONLY`）；`private_detail`、原始 stdout/stderr 只留在
+  控制器事件里。没有 `public_reason` 的判定沿用原有截断原始输出。
+- 声明了 verifier contract 但 scope 没有 `staging_root`/`cas_root` 时，controller 返回
+  `HELD_VERIFIER_NOT_RUNNABLE`，不会退化为只跑普通 `verification`。
+- `owner` 与 scope `agents[*].owner` 比较后记录为 `owner_independence`
+  （`SAME_OWNER` / `DISTINCT` / `UNDECLARED`）；这是记录，不是阻断，系统无法核实作者。
+- `verification_root` 整体（排除解释器/工具缓存）的文件清单在准备时绑定为 `verifier_files`，
+  每次 attempt 前后复核；任何变化 → `HELD_VERIFIER_IDENTITY`，attempt 记为 `BLOCKED`
+  （`VERIFIER_IDENTITY_DRIFT`）。
 
 ---
 

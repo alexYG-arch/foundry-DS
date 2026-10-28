@@ -17,13 +17,13 @@ from .build_authoring import _proposal_event, _require_revision_store, read_buil
 from .acceptance_contract import validate_acceptance_contracts
 from .build_plan import validate_build_plan
 from .build_replan import adapt_build_plan
-from .build_check_protocol import CHECKER_GUIDANCE, verification_interfaces
+from .build_check_protocol import CHECKER_GUIDANCE, public_feedback, verification_interfaces
 from .build_rebind import validate_rebind, approval_rebind, superseding_prepared, reverification_candidates
 from .build_repair import RepairContext
 from .build_state import (affected_workpacks, repair_budget_exhaustion, project_execution_state,
                           attempt_budget, task_budget_usage, failure_status, project_budget_attempts,
                           production_attempts, is_checker_reverification)
-from .build_artifacts import (relative_path as _relative, file_identity as _file_identity,
+from .build_artifacts import (relative_path as _relative, file_identity as _file_identity, directory_manifest,
                               superseded_artifacts, changed_accepted_files, check_accepted_files)
 from .build_review import validate_build_review, validate_review_sources
 from .local_process import LocalCommand, CodexSandboxRunner, unsupported_isolation_paths
@@ -389,6 +389,9 @@ def prepare_build_scope(store, ir, plan, source, scope, *, created_at,
         startup["coding_instruction_preflight"] = instruction_read_preflight(
             workspace, [workspace, *scope["source_read_roots"], *source_files])
     payload = {"scope": deepcopy(scope), "verifier_files": files,
+               # The whole checker directory, not only the referenced files:
+               # helpers, fixtures and expected data a checker reads are judgment too.
+               "verifier_tree": directory_manifest(scope["verification_root"]),
                **({"model_defaults_source": model_defaults_source} if model_defaults_source is not None else {}),
                "acceptance_contracts": contracts,
                **({"verifier_source": verifier_source} if verifier_source else {}), **startup}
@@ -742,6 +745,11 @@ class BuildController:
             for name, identity in prepared["verifier_files"].items():
                 _check(_file_identity(_relative(Path(prepared["scope"]["verification_root"]).resolve(), name)) == identity,
                        "independent verifier bytes changed")
+            if "verifier_tree" in prepared:
+                # Preparations recorded before the tree binding existed keep
+                # their referenced-files check only.
+                _check(directory_manifest(prepared["scope"]["verification_root"]) == prepared["verifier_tree"],
+                       "independent verifier tree changed; helpers or fixtures differ from the reviewed checker directory")
         _check(_directory(prepared["scope"]["verification_root"]) == Path(prepared["scope"]["verification_root"]),
                "approved verifier binding changed")
         for root in prepared["scope"]["source_read_roots"]:
@@ -934,7 +942,8 @@ class BuildController:
                          for event in events if event["event_type"] == "BUILD_COMMAND_PLANNED"
                          and event["payload"].get("attempt_id") == row["attempt_id"]],
             "verification": [{**{key: value for key, value in check.items() if key != "result"},
-                "result": {key: value[:1200] if isinstance(value, str) else value
+                "result": public_feedback(check.get("result", {})) or {
+                    key: value[:1200] if isinstance(value, str) else value
                     for key, value in check.get("result", {}).items() if key in {
                         "status", "failure_domain", "automatic_retry_allowed", "repair_artifact_ids", "stdout", "stderr"}}}
                 for check in row.get("verification", [])], "effects": row.get("effects"),

@@ -60,5 +60,44 @@ class CheckProtocolTests(unittest.TestCase):
         rows=verification_interfaces(f.plan['workpacks'][0],f.scope)
         self.assertTrue(all(r['result_protocol']=='EXISTING_NON_RESOURCE_INTERFACE' for r in rows))
 
+    def test_public_feedback_projects_only_the_public_reason(self):
+        from harness_foundry_factory.build_check_protocol import public_feedback
+        verdict={'status':'CHECKS_FAILED','failure_kind':'ASSERTION','public_reason':'count must be reported',
+                 'private_detail':{'expected_rows':3,'fixture':'PRIVATE_FIXTURE'},'repair_artifact_ids':['UPSTREAM']}
+        result={'status':'VALIDATION_FAILED','exit_code':1,'stdout':json.dumps(verdict),'stderr':'PRIVATE traceback',
+                'failure_domain':'BUSINESS_ASSERTION','automatic_retry_allowed':True,'repair_artifact_ids':['UPSTREAM']}
+        projected=public_feedback(result)
+        self.assertEqual(projected['feedback_projection'],'PUBLIC_REASON_ONLY')
+        self.assertEqual(projected['failure_domain'],'BUSINESS_ASSERTION')
+        self.assertIsNone(projected['stderr'])
+        text=json.dumps(projected)
+        self.assertIn('count must be reported',text)
+        for private in ('PRIVATE_FIXTURE','expected_rows','PRIVATE traceback','private_detail'):
+            self.assertNotIn(private,text)
+        # Checkers that do not separate the two keep the existing raw feedback (no projection).
+        self.assertIsNone(public_feedback({'status':'VALIDATION_FAILED','stdout':'plain text failure'}))
+        self.assertIsNone(public_feedback({'status':'VALIDATION_FAILED','stdout':json.dumps({'status':'CHECKS_FAILED','reason':'x'})}))
+        self.assertIsNone(public_feedback({**result,'stdout_truncated':True}))
+
+    def test_directory_manifest_binds_the_checker_root_but_not_its_caches(self):
+        import tempfile
+        from pathlib import Path
+        from harness_foundry_factory.build_artifacts import directory_manifest
+        from harness_foundry_factory.build_types import RequestValidationError
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            (root/'check.py').write_text('print(1)\n')
+            (root/'fixtures').mkdir();(root/'fixtures'/'expected.json').write_text('{}')
+            (root/'__pycache__').mkdir();(root/'__pycache__'/'check.cpython-312.pyc').write_bytes(b'\x00')
+            (root/'.DS_Store').write_bytes(b'junk')
+            manifest=directory_manifest(root)
+            self.assertEqual(set(manifest),{'check.py','fixtures/expected.json'})
+            self.assertEqual(manifest['check.py']['size'],len('print(1)\n'))
+            (root/'fixtures'/'expected.json').write_text('{"changed": true}')
+            self.assertNotEqual(directory_manifest(root),manifest)
+            for index in range(3):(root/f'extra{index}.txt').write_text('x')
+            with self.assertRaisesRegex(RequestValidationError,'more than 4 files'):
+                directory_manifest(root,max_files=4)
+
 
 if __name__=='__main__':unittest.main()

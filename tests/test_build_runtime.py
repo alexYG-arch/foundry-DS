@@ -1415,6 +1415,25 @@ else:
         self.assertEqual(len(self.runner.invocations), 1)
         self.assertEqual(self.events("BUILD_ATTEMPT_FINISHED")[0]["payload"]["status"], "UNKNOWN_SIDE_EFFECT")
 
+    def test_unreferenced_verifier_helper_is_bound_too(self):
+        """A helper or fixture the checker could import is judgment as well: adding
+        or editing one after preparation stops dispatch, while interpreter
+        caches written by a run never count as a change."""
+        self.prepare()
+        prepared = self.events("BUILD_AUTHORIZATION_PREPARED")[0]["payload"]
+        self.assertEqual(set(prepared["verifier_tree"]), {"check.py"})
+        self.assertEqual(prepared["verifier_tree"]["check.py"], prepared["verifier_files"]["check.py"])
+        cache = self.verifier / "__pycache__"
+        cache.mkdir()
+        (cache / "check.cpython-312.pyc").write_bytes(b"\x00")
+        (self.verifier / "helpers.py").write_text("EXPECTED = 'moved goalposts'\n")
+        result = self.advance()
+        self.assertEqual(result["status"], "BUILD_STOPPED", result)
+        self.assertIn("verifier tree changed", result["reason"])
+        self.assertEqual(len(self.runner.invocations), 0)
+        (self.verifier / "helpers.py").unlink()
+        self.assertEqual(self.advance()["status"], "PLAN_CHECKS_ACCEPTED")
+
     def test_absent_workspace_is_not_created_by_prepare_or_approval(self):
         (self.workspace / "src").rmdir()
         (self.workspace / "outputs").rmdir()

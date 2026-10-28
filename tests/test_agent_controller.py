@@ -356,6 +356,72 @@ class AgentControllerTests(unittest.TestCase):
             validate_scope_13(self.plan, scope)
         validate_scope_13(self.plan, scope, test_only=True)
 
+    def test_helper_added_to_verifier_root_after_binding_is_detected(self):
+        """The binding covers the whole checker directory, not only referenced files."""
+        from harness_foundry_factory.agents.scope13 import verifier_files
+        bound = verifier_files(self.plan, self.scope)
+        (self.verifier / "helpers.py").write_text("EXPECTED = 42\n")
+        (self.verifier / "__pycache__").mkdir()
+        (self.verifier / "__pycache__" / "check.cpython-312.pyc").write_bytes(b"\x00")
+        changed = verifier_files(self.plan, self.scope)
+        self.assertEqual(set(changed) - set(bound), {"helpers.py"})   # caches never count as a change
+        now = datetime.now(timezone.utc).isoformat()
+        revision = len(self.store.list_events(self.program))
+        prepared = self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_PREPARED",
+            "payload": {"scope": self.scope, "plan": self.plan, "verifier_files": bound}}],
+            expected_revision=revision, idempotency_key="tree-prepare", created_at=now, require_new=True)[0]
+        self.store.append_batch(self.program, [{"event_type": "BUILD_AUTHORIZATION_APPROVED",
+            "payload": {"prepared_event_id": prepared["event_id"]}}], expected_revision=revision + 1,
+            idempotency_key="tree-approve", created_at=now, require_new=True)
+        adapter = FlakyAdapter(self.workspace)
+        result = AgentBuildController(self.store, self.program,
+                                      adapter_factory=lambda task, scope: adapter).advance(prepared["event_id"])
+        self.assertEqual(result["status"], "HELD_VERIFIER_IDENTITY", result)
+        self.assertEqual(adapter.calls, 0)
+
+    def test_owner_independence_is_recorded_not_enforced(self):
+        plan, _ = self._contract_plan()                      # verifier owner: "verifier-owner"
+        scope = self._cas_scope()
+        scope["agents"]["dsh"]["owner"] = "verifier-owner"   # same party wrote producer config and checker
+        prepared = self._prepare(scope, plan, "same-owner")
+        result = AgentBuildController(self.store, self.program,
+                                      adapter_factory=lambda task, scope: StagingAdapter()).advance(prepared["event_id"])
+        self.assertEqual(result["status"], "PLAN_CHECKS_ACCEPTED", result)   # labelled, still accepted
+        self.assertEqual(result["owner_independence"], ["SAME_OWNER"])
+        finished = [row for row in self.store.list_events(self.program)
+                    if row["event_type"] == "BUILD_ATTEMPT_FINISHED"][-1]["payload"]
+        self.assertEqual(finished["owner_independence"], "SAME_OWNER")
+        scope["agents"]["dsh"]["owner"] = "producer-team"
+        prepared = self._prepare(scope, plan, "distinct-owner")
+        result = AgentBuildController(self.store, self.program,
+                                      adapter_factory=lambda task, scope: StagingAdapter()).advance(prepared["event_id"])
+        self.assertIn("DISTINCT", result["owner_independence"])
+        del scope["agents"]["dsh"]["owner"]
+        prepared = self._prepare(scope, plan, "undeclared-owner")
+        result = AgentBuildController(self.store, self.program,
+                                      adapter_factory=lambda task, scope: StagingAdapter()).advance(prepared["event_id"])
+        self.assertIn("UNDECLARED", result["owner_independence"])
+
+    def test_feedback_to_the_producer_carries_only_the_public_reason(self):
+        (self.verifier / "check.py").write_text(
+            "import json, sys\n"
+            "print(json.dumps({'status': 'CHECKS_FAILED', 'failure_kind': 'ASSERTION',"
+            " 'public_reason': 'proof.txt must name the artifact',"
+            " 'private_detail': {'expected': 'SECRET-EXPECTED-VALUE'}}))\n"
+            "sys.exit(1)\n")
+        adapter = FlakyAdapter(self.workspace, fail_first=False)
+        result = AgentBuildController(self.store, self.program,
+                                      adapter_factory=lambda task, scope: adapter).advance(self.prepared["event_id"])
+        self.assertEqual(result["status"], "TASK_REPAIR_BUDGET_EXHAUSTED", result)
+        self.assertEqual(adapter.calls, 2)
+        repair_prompt = adapter.prompts[1]
+        self.assertIn("proof.txt must name the artifact", repair_prompt)
+        self.assertNotIn("SECRET-EXPECTED-VALUE", repair_prompt)
+        self.assertNotIn("private_detail", repair_prompt)
+        repair = [row for row in self.store.list_events(self.program)
+                  if row["event_type"] == "BUILD_AGENT_REPAIR_REQUESTED"][0]["payload"]
+        self.assertNotIn("SECRET-EXPECTED-VALUE", repair["feedback"])
+
     def test_scope_requires_verifier_files_or_a_verifier_contract(self):
         plan = json.loads(json.dumps(self.plan))
         plan["workpacks"][0]["verification"] = [{"case_id": "C1", "argv": ["python", "-c", "pass"], "artifact_ids": ["PROOF"]}]

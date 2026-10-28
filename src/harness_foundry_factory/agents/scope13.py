@@ -26,7 +26,7 @@ SCOPE_FIELDS = {
 }
 OPTIONAL_FIELDS = {"staging_root", "cas_root", "execution", "max_cpu_seconds",
                     "max_memory_bytes", "max_fds", "max_output_bytes"}
-AGENT_FIELDS = {"adapter", "executable", "dsh_home", "session", "model", "base_url", "key_file"}
+AGENT_FIELDS = {"adapter", "executable", "dsh_home", "session", "model", "base_url", "key_file", "owner"}
 SANDBOX_FIELDS = {"provider", "network"}
 PROVIDERS = {"seatbelt", "bwrap", "none"}
 SANDBOXED_PROVIDERS = {"seatbelt", "bwrap"}
@@ -71,19 +71,36 @@ def verifier_references(plan) -> dict[str, list[str]]:
 
 
 def verifier_files(plan, scope) -> dict[str, dict]:
-    """Identity of every ``verifier://`` file the plan's checks reference.
+    """Identity of the whole verifier root, after checking every ``verifier://``
+    reference resolves to a file inside it.
 
-    Mirrors the 1.2 ``_validate_scope`` binding so the controller can detect a
-    checker that changed between preparation and dispatch.
+    Mirrors the 1.2 binding (referenced files plus the directory manifest) so
+    the controller detects any checker, helper or fixture that changed between
+    preparation and dispatch.
     """
+    from harness_foundry_factory.build_artifacts import directory_manifest
     root = Path(scope["verification_root"]).resolve()
-    files = {}
     for names in verifier_references(plan).values():
         for name in names:
             path = _relative_under(root, name, "verifier file")
             _require(path.is_file(), f"verifier file is missing: {name}")
-            files[name] = _file_identity(path)
-    return files
+    try:
+        return directory_manifest(root)
+    except Exception as exc:  # RequestValidationError from the shared helper
+        raise ValueError(str(exc)) from exc
+
+
+def owner_independence(scope, task, verifier_owner) -> str:
+    """Whether the declared producer and verifier owners differ.
+
+    The system records this; it cannot verify who actually wrote either side.
+    """
+    adapter = task.get("agent", {}).get("adapter")
+    producer = next((definition.get("owner") for definition in scope["agents"].values()
+                     if definition.get("adapter") == adapter), None)
+    if not producer or not verifier_owner:
+        return "UNDECLARED"
+    return "SAME_OWNER" if producer == verifier_owner else "DISTINCT"
 
 
 def _absolute_file(value, label):
@@ -170,6 +187,8 @@ def validate_scope_13(plan, scope, *, test_only=False):
         else:
             _require(isinstance(definition.get("executable"), str), "agent executable is required")
             _absolute_file(definition["executable"], f"agent {name} executable")
+        if "owner" in definition:
+            _require(isinstance(definition["owner"], str) and definition["owner"].strip(), "agent owner must be nonempty text")
         if "session" in definition:
             _require(isinstance(definition["session"], dict), "agent session must be an object")
         if "model" in definition:
