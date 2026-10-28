@@ -984,9 +984,13 @@ class BuildResourceIntegrationTests(unittest.TestCase):
                                              "BUILD_COMMAND_OBSERVED"}:
                     continue
                 payload = row["payload"]
+                result = payload.get("result") or {}
                 detail.append({"type": row["event_type"], "attempt": payload.get("attempt_id"),
                                "command": payload.get("command_id"), "status": payload.get("status"),
-                               "result_status": (payload.get("result") or {}).get("status"),
+                               "result_status": result.get("status"), "timed_out": result.get("timed_out"),
+                               "exit_code": result.get("exit_code"),
+                               "stdout": str(result.get("stdout", ""))[:400],
+                               "stderr": str(result.get("stderr", ""))[:800],
                                "pid": payload.get("pid")})
             print("RECOVERY_DETAIL=" + json.dumps(detail, ensure_ascii=False)[:8000], flush=True)
         self.assertEqual(result["status"], "PLAN_CHECKS_ACCEPTED", result)
