@@ -1,8 +1,8 @@
 # Foundry 路线图 v3：Contract Independence
 
-- 状态：`P3_FULL_CONTRACT_VERIFIED`
-- 日期：2026-10-26
-- 基线：`repo/` commit `eb01bc0`，公开门禁 **75 模块 / 962 项**
+- 状态：见 [`STATUS.json`](STATUS.json) `roadmap.status`（2026-10-28：`P1_CONTRACT_BASELINE_IMPLEMENTED_P3_FIXTURE_ONLY`）。本文不再手写状态或门禁数字。
+- 日期：2026-10-26（状态字段 2026-10-28 修订）
+- 基线：`repo/` commit `eb01bc0`；门禁数字见 `STATUS.json` `gate`
 - 方案：`Harness_Foundry_升级方案_v3_ContractIndependence.md`（项目计划目录）
 - 规格：[AGENT_ADAPTER_CONTRACT.md](AGENT_ADAPTER_CONTRACT.md)（v3）
 - 决策：[ADR-0004-CONTRACT-INDEPENDENCE.md](decisions/ADR-0004-CONTRACT-INDEPENDENCE.md)
@@ -118,33 +118,33 @@ O1 optional hardening 可并行，不设门
 
 ## 4. 当前状态
 
-已完成：
+权威字段在 [`STATUS.json`](STATUS.json)（`roadmap.implemented` / `roadmap.not_verified`）；下面是 2026-10-28 的摘要。
+
+已实现：
 
 - Carrier 文档/指令发现/CARRIERS.md；
 - Controller 旧事件/read-build/retry/budget/recovery/repair/drift；
 - D4a/D0；
 - DSH/API live（宿主）；
-- 2B Linux VM + bwrap + nft + host gateway（**可选加固证据**）；
-- 2A macOS VM 未完成（介质 25.4GB，不阻塞）。
+- staging → CAS（`agents/artifacts.py`）、独立 verifier contract 与 runner、1.3 controller-only acceptance；
+- `TRUSTED_HOST` 作为显式标注的无沙箱基线（`execution.mode` 与 `sandbox.provider` 必须一致；结果记录 `fs_enforcement`）；
+- 1.2 与 1.3 共用 attempt/acceptance/budget 投影；verifier 目录级绑定；
+- 2B Linux VM + bwrap + nft + host gateway（**可选加固证据**）。
 
-未完成：
+未验证 / 未完成：
 
-- staging/CAS 实现；
-- 独立 verifier contract；
-- controller acceptance 更新；
-- `TRUSTED_HOST` 正式路径；
-- P3 无 Codex full build；
+- P3 无 Codex full build 只有夹具 adapter 的 e2e，没有真实 agent transport 的完整构建；
 - 设计变异/70 次（外部门）；
-- GUI attach（不可用）。
+- GUI attach（不可用）；
+- 2A macOS VM（介质 25.4GB，可选加固，不阻塞）。
 
 ---
 
 ## 5. 下一步
 
-1. P0 评审 v3 方案/spec；
-2. P1 staging/CAS + verifier contract；
-3. P2 DSH/API trusted-host 路径；
-4. P3 无 Codex full build；
-5. carrier/RSI。
+1. P3：用真实 DSH/API transport 跑一次无 Codex 完整构建，记录实际 `fs_enforcement` 与 `owner_independence`；
+2. 1.3 成为默认路线前完成 `read-build`/恢复路径在 1.3 上的实测；
+3. carrier/RSI；
+4. 可选加固（独立 UID / seatbelt / bwrap）只在声称隔离时启用。
 
 > 不再以 sandbox/VM 作为计划闭合条件；可选加固保留。

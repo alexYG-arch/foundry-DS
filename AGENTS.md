@@ -1,5 +1,6 @@
 # Harness Foundry guidance
 
+- Start from [`docs/DOC_INDEX.md`](docs/DOC_INDEX.md): it separates the current normative documents from historical epoch/repair/review records, and [`docs/STATUS.json`](docs/STATUS.json) is the only place plan/spec status and gate numbers are written. Do not restate those numbers in prose.
 - Follow [the clear communication policy](docs/CLEAR_COMMUNICATION.md) for human-facing dialogue and documents: explain results, limits and next actions in the user's language; preserve exact machine protocols, evidence and permission boundaries. This is expression guidance, not another approval gate. Use `read-build --human` only for a read-only summary; retain `--json` for complete machine-readable facts and scope.
 
 - `GENERIC_REVIEWED_BUILD_ONLY`: all new Harness builds use the generic reviewed Build route. The user retired the old new-build workflow on 2026-09-20. Do not maintain, reactivate, or fall back to Start Package/Candidate/epoch authoring, old runtime authorization, Driver/Workpack startup, or `package-local` as production routes. Public legacy commands return `LEGACY_WORKFLOW_RETIRED`; do not restore them as a workaround.

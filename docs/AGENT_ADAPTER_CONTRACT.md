@@ -1,9 +1,9 @@
 # Agent Contract Independence 规格 v3
 
 - 版本：`AGENT_CONTRACT_INDEPENDENCE_SPEC_V3`
-- 状态：`P1_PARTIAL_IMPLEMENTED`（CAS/verifier identity/controller gate 已实现；CAS view/verifier runner/resource limits 待做）
-- 日期：2026-10-26
-- 基线：`eb01bc0`，75 模块 / 962 项门禁
+- 状态：见 [`STATUS.json`](STATUS.json) `spec.status`（2026-10-28：`P1_IMPLEMENTED_CONTROLLER_LABELS_ENFORCEMENT`；CAS view、verifier runner、resource limits 已实现，真实 transport 上的完整构建仍未验证）
+- 日期：2026-10-26（状态字段 2026-10-28 修订）
+- 基线：`eb01bc0`；门禁数字见 `STATUS.json` `gate`
 - 配套方案：`Harness_Foundry_升级方案_v3_ContractIndependence.md`
 - 取代：`AGENT_TRANSPORT_SPEC_V2` 的“sandbox 必选”语义
 - 保留：DSH/API transport、旧事件、retry/budget/recovery、carrier、D4a/D0

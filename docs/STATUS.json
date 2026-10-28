@@ -1,0 +1,51 @@
+{
+  "schema_version": "FOUNDRY_STATUS_V1",
+  "updated_at": "2026-10-28",
+  "authority": "This file is the only place plan/spec status and gate numbers are written by hand or by tools/update_status.py; documents cite it instead of repeating numbers.",
+  "roadmap": {
+    "document": "docs/FOUNDRY_ROADMAP_2026Q4.md",
+    "status": "P1_CONTRACT_BASELINE_IMPLEMENTED_P3_FIXTURE_ONLY",
+    "implemented": [
+      "staging -> CAS ingestion (agents/artifacts.py)",
+      "verifier contract identity and runner (agents/verifier.py, agents/verifier_runner.py)",
+      "controller-only acceptance on the 1.3 route (agents/agent_controller.py), shared projections with the 1.2 controller",
+      "TRUSTED_HOST execution mode as the explicit, labelled unsandboxed baseline (scope13: execution.mode <-> sandbox.provider)",
+      "append-only events, cumulative budgets, recovery holds, verifier directory binding"
+    ],
+    "not_verified": [
+      "P3 no-Codex full build on a real agent transport: exercised by fixture adapters only",
+      "design mutation / 70 experiments (external gate)",
+      "GUI attach (not supported)",
+      "2A macOS VM (optional hardening, not blocking)"
+    ]
+  },
+  "spec": {
+    "document": "docs/AGENT_ADAPTER_CONTRACT.md",
+    "status": "P1_IMPLEMENTED_CONTROLLER_LABELS_ENFORCEMENT",
+    "assurance_default": "CONTRACT_INDEPENDENCE_DETECT_ONLY when fs_enforcement is NONE; CONTRACT_PLUS_SANDBOX when a seatbelt/bwrap provider ran the task"
+  },
+  "gate": {
+    "tool": "tools/check_release_source.py",
+    "semantics": "zero skips, zero failures within the platform's required set",
+    "platform_sets": {
+      "common": "REQUIRED_MODULES",
+      "darwin": ["test_sandbox_seatbelt", "test_agent_scope13_seatbelt"],
+      "linux": []
+    },
+    "last_local_result": {
+      "platform_set": "linux",
+      "discovered": 976,
+      "passed": 976,
+      "skipped": 0,
+      "failed": 0,
+      "measured_on": "2026-10-28 after WP4/WP6",
+      "note": "numbers before the platform split: 963 discovered / 950 passed / 6 skipped / 7 failed on Linux"
+    }
+  },
+  "control_store": {
+    "formats": ["REVISION_V1", "REVISION_V1_DEDUP"],
+    "hot_path_reads": "stream reads elide BUILD_SOURCES_CAPTURED.snapshot inside SQLite; bodies are point reads (docs/A3_A4_CLOSURE.md)",
+    "offline_tools": ["tools/migrate_store_dedup.py", "tools/index_store_event_type.py"],
+    "active_8_5gb_migration": "outside the verified range by the user's 2026-10-28 decision"
+  }
+}

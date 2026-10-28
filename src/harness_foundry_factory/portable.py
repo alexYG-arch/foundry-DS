@@ -59,6 +59,9 @@ ALLOWED_TOP_LEVEL_FILES = (
     "docs/A3_A4_CLOSURE.md",
     # The runtime contract cites the independence baseline decision.
     "docs/decisions/ADR-0004-CONTRACT-INDEPENDENCE.md",
+    # AGENTS.md points at the document index and the single status source.
+    "docs/DOC_INDEX.md",
+    "docs/STATUS.json",
     "pyproject.toml",
 )
 ALLOWED_TREES = (

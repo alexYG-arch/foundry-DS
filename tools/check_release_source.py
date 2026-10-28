@@ -101,6 +101,7 @@ REQUIRED_MODULES = (
     "test_control_view",
     "test_a3a4_helpers",
     "test_store_read_paths",
+    "test_status_source",
 )
 # Real-sandbox modules: loaded only where that sandbox exists. The gate still
 # forbids skips inside whatever set it loads.
