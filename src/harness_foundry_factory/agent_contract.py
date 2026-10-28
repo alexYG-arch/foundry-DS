@@ -1,0 +1,27 @@
+"""Compatibility shim for M1.0 imports; new code uses .agents.base."""
+
+from .agents.base import (
+    ADAPTER_PROBE_FAILED,
+    ADAPTER_PROTOCOL_ERROR,
+    ADAPTER_UNSUPPORTED_CAPABILITY,
+    ADAPTER_USAGE_UNKNOWN,
+    AGENT_HANDOFF_INVALID,
+    AGENT_SANDBOXES,
+    DEFAULTS_SOURCES,
+    EVENT_FORMATS,
+    PROMPT_TRANSPORTS,
+    SANDBOX_NETWORK_UNSUPPORTED,
+    SANDBOX_UNAVAILABLE,
+    USAGE_SOURCES,
+    AgentAdapter,
+    AgentCapabilities,
+    AgentRequest,
+    SandboxProvider,
+)
+
+__all__ = [
+    "ADAPTER_PROBE_FAILED", "ADAPTER_PROTOCOL_ERROR", "ADAPTER_UNSUPPORTED_CAPABILITY",
+    "ADAPTER_USAGE_UNKNOWN", "AGENT_HANDOFF_INVALID", "AGENT_SANDBOXES", "DEFAULTS_SOURCES",
+    "EVENT_FORMATS", "PROMPT_TRANSPORTS", "SANDBOX_NETWORK_UNSUPPORTED", "SANDBOX_UNAVAILABLE",
+    "USAGE_SOURCES", "AgentAdapter", "AgentCapabilities", "AgentRequest", "SandboxProvider",
+]

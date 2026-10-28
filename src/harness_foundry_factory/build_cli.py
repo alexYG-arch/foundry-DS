@@ -1,0 +1,103 @@
+"""Public generic CLI: no Candidate, legacy kernel, sibling spec or domain pipeline."""
+
+import argparse
+import json
+from pathlib import Path
+import sys
+
+from .python_startup import require_supported_python
+
+require_supported_python(module="harness_foundry_factory.build_cli")
+
+from .build_types import FactoryError, RequestValidationError, canonical_json
+from .identity import BASELINE_FACTORY_ID, FACTORY_ID, FACTORY_VERSION, TARGET_PROTOCOL_VERSION
+
+
+BUILD_COMMANDS = frozenset({
+    "preview-build", "materialize-build-preview", "derive-build-correction", "resolve-build-technical-attempt",
+    "compile-build-plan", "record-build-plan", "capture-build-sources",
+    "prepare-build-authorization", "approve-build-authorization", "revoke-build-authorization",
+    "reassess-build-attempt", "reconcile-build-observations", "resolve-build-attempt", "request-build-repair", "advance-build", "read-build", "read-history",
+})
+
+
+def _load_request(location):
+    value = json.load(sys.stdin) if location == "-" else json.loads(Path(location).read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise RequestValidationError("request JSON must contain one object")
+    return value
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise RequestValidationError(message, details={"reason_code": "CLI_ARGUMENT_ERROR"})
+
+
+def main(argv=None):
+    parser = _ArgumentParser(prog="hffactory")
+    commands = parser.add_subparsers(dest="command", required=True)
+    for name in ("version", *sorted(BUILD_COMMANDS)):
+        command = commands.add_parser(name)
+        output = command.add_mutually_exclusive_group()
+        output.add_argument("--json", action="store_true")
+        if name == "read-build":
+            output.add_argument("--human", action="store_true", help="Show a read-only Chinese status summary")
+        if name in {"read-build", "read-history"}:
+            command.add_argument("--program-id", required=True)
+        elif name != "version":
+            command.add_argument("--request", required=True)
+        if name == "read-history":
+            command.add_argument("--database", required=True)
+        elif name not in {"version", "compile-build-plan"}:
+            command.add_argument("--control-db", required=True)
+    try:
+        args = parser.parse_args(argv)
+    except RequestValidationError as exc:
+        result = exc.as_response()
+        result.update(writes_performed=False, execution_started=False)
+        print(canonical_json(result))
+        return exc.exit_code
+    code = 0
+    try:
+        if args.command == "version":
+            result = {"schema_version": "1.0", "status": "PASS", "factory_id": FACTORY_ID,
+                      "implementation_version": FACTORY_VERSION, "target_protocol_version": TARGET_PROTOCOL_VERSION,
+                      "baseline_factory_id": BASELINE_FACTORY_ID,
+                      "product_route": "GENERIC_REVIEWED_BUILD", "storage_format": "REVISION_V1",
+                      "legacy_specification_required": False, "writes_performed": False}
+        elif args.command == "compile-build-plan":
+            from .build_plan import compile_build_plan, validate_compiled_build_plan
+            request = _load_request(args.request)
+            if set(request) not in ({"requirement_ir", "plan"}, {"requirement_ir", "plan", "design_record"}):
+                raise RequestValidationError("compile-build-plan requires requirement_ir, plan and optional design_record")
+            result = compile_build_plan(request["requirement_ir"], request["plan"], request.get("design_record"))
+            validate_compiled_build_plan(request["requirement_ir"], request["plan"], result)
+        elif args.command == "read-history":
+            from .legacy_history import read_history
+            result = read_history(args.database, args.program_id)
+        elif args.command == "read-build":
+            from .build_entrypoint import read_build
+            result = read_build(args.control_db, args.program_id)
+        else:
+            from .build_entrypoint import apply_build_request
+            result = apply_build_request(args.command, _load_request(args.request), args.control_db)
+        if args.command == "advance-build" and result.get("status") not in {"PLAN_CHECKS_ACCEPTED", "BUILD_CONTROL_RETURNED"}:
+            code = 6
+    except FactoryError as exc:
+        result, code = exc.as_response(), exc.exit_code
+    except (OSError, ValueError) as exc:
+        error = RequestValidationError("failed to read or validate request", details={"error": str(exc)})
+        result, code = error.as_response(), error.exit_code
+    except Exception as exc:
+        result, code = {"schema_version": "1.0", "status": "ERROR",
+                        "error": {"code": "INTERNAL_FACTORY_ERROR", "message": str(exc)}}, 1
+    if getattr(args, "human", False):
+        from .build_display import render_build_readback
+        print(render_build_readback(result))
+    else:
+        print(canonical_json(result) if args.json else json.dumps(result, ensure_ascii=False, indent=2))
+    return code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

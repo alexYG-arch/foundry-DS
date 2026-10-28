@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://harness-foundry.local/schemas/design_record.schema.json",
+  "title": "Foundry Design Decision Record (FOUNDRY_DDR_V1)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "record_id", "plan_id", "owner", "created_at", "carrier", "stages", "rules", "subharnesses", "checks", "gaps"],
+  "properties": {
+    "schema_version": {"const": "FOUNDRY_DDR_V1"},
+    "record_id": {"type": "string", "pattern": "^DDR-[A-Za-z0-9._-]+$"},
+    "plan_id": {"type": "string", "minLength": 1},
+    "owner": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "minLength": 1},
+    "carrier": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["carrier_id", "limits"],
+      "properties": {
+        "carrier_id": {"type": "string", "enum": ["codex", "claude-code", "generic-agent", "human-only"]},
+        "limits": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+      }
+    },
+    "stages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7"],
+      "patternProperties": {
+        "^S[0-7]$": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["status", "decision", "evidence"],
+          "properties": {
+            "status": {"type": "string", "enum": ["DECIDED", "DEFERRED", "NOT_APPLICABLE"]},
+            "decision": {"type": "string"},
+            "evidence": {"type": "array", "items": {"type": "string"}}
+          }
+        }
+      }
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "type", "text", "enforcement"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "type": {"type": "string", "enum": ["DOMAIN_RULE", "GOVERNANCE_POLICY", "HEURISTIC"]},
+          "text": {"type": "string", "minLength": 1},
+          "enforcement": {"type": "string"}
+        }
+      }
+    },
+    "subharnesses": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "reason", "alternatives"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "reason": {"type": "string", "minLength": 1},
+          "alternatives": {"type": "string", "minLength": 1},
+          "cost": {"type": "string"}
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["case_id", "verifier", "oracle", "independence"],
+        "properties": {
+          "case_id": {"type": "string", "minLength": 1},
+          "verifier": {"type": "string", "minLength": 1},
+          "oracle": {"type": "string", "minLength": 1},
+          "independence": {"type": "string", "minLength": 1},
+          "negative": {"type": "string"}
+        }
+      }
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["capability", "owner", "next"],
+        "properties": {
+          "capability": {"type": "string", "minLength": 1},
+          "owner": {"type": "string", "minLength": 1},
+          "next": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

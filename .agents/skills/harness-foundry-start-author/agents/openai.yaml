@@ -1,0 +1,4 @@
+interface:
+  display_name: "Harness Foundry Build"
+  short_description: "通用 Harness 搭建：先审阅文档，批准运行范围后自动实施、独立验证与恢复"
+  default_prompt: "Use $harness-foundry-start-author with GENERIC_REVIEWED_BUILD_ONLY. Retain clarification Q&A, save and show a versioned build document, and wait for actual human confirmation before entering Foundry. Display concrete runtime scope before recording real approval, then advance implementation, independent checking, repair and resume without per-Workpack gates. Legacy new-build commands are retired, not a fallback. Inspect old authoring records only with read-history; historical approvals and baseline diagnostics do not authorize new builds or prove release acceptance."

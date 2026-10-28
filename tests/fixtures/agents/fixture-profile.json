@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "adapter_id": "fixture-agent",
+  "adapter_version": "1",
+  "capabilities": {
+    "prompt_transport": "stdin",
+    "events": "jsonl",
+    "usage": "UNKNOWN",
+    "defaults": "EXPLICIT_ONLY",
+    "handoff": false,
+    "sandbox": "NONE"
+  },
+  "probe": {
+    "argv": ["{executable}", "--version"],
+    "expect_regex": "fixture-agent"
+  },
+  "invocation": {
+    "argv": ["{executable}", "--prompt-file", "{prompt_file}"],
+    "stdin": "{prompt}"
+  },
+  "event_map": [
+    {"when": {"type": "result"}, "emit": "TURN_COMPLETED"}
+  ],
+  "exit_map": {"0": "PASS", "!0": "FAIL"},
+  "unknown_event": "RETAIN"
+}

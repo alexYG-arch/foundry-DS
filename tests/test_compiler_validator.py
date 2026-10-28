@@ -1,0 +1,4048 @@
+"""Compiler determinism, output safety, and validator mutation tests."""
+
+from __future__ import annotations
+
+from harness_foundry_factory.constants import default_spec_root
+
+import json
+import hashlib
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from harness_foundry_factory.compiler import (
+    _mandatory_negative_cases,
+    _repair_structural_hashes,
+    _seal_candidate_tree,
+    compile_candidate,
+)
+from harness_foundry_factory.validator import (
+    _authorized_driver_materialization_precondition,
+    _authorized_lab_bootstrap_materialization,
+    _authorized_lab_self_conformance_materialization,
+    _authorized_lab_tool_release_materialization,
+    _authorized_lab_tool_release_preparation_materialization,
+    _authorized_linkage_bootstrap_failure_materialization,
+    _authorized_linkage_executor_no_op_failure_materialization,
+    _candidate_tree_hash,
+    _contract_path,
+    _declared_executable_hash_matches,
+    _file_hash,
+    _json_hash,
+    _validate_prepublication_staging_candidate,
+    validate_candidate,
+)
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+SPEC_ROOT = default_spec_root()
+FIXTURE_PATH = REPOSITORY_ROOT / "tests/fixtures/harness_requirement_ir.json"
+CREATED_AT = "2026-07-10T00:00:00Z"
+
+
+class CompilerValidatorTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name).resolve()
+        self.candidate = self.root / "candidate"
+        self.ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        self.ir["target"]["output_root"] = str(self.candidate)
+        self.compile_result = self._compile("staging")
+
+    def tearDown(self) -> None:
+        self._make_tree_writable(self.root)
+        self.temporary.cleanup()
+
+    @staticmethod
+    def _make_tree_writable(root: Path) -> None:
+        if not root.exists():
+            return
+        for path in (root, *root.rglob("*")):
+            if path.is_symlink():
+                continue
+            mode = path.stat().st_mode
+            path.chmod(mode | (0o700 if path.is_dir() else 0o600))
+
+    def _compile(self, staging_name: str, candidate: Path | None = None) -> dict:
+        target = candidate or self.candidate
+        return compile_candidate(
+            self.ir,
+            SPEC_ROOT,
+            self.root / staging_name,
+            target,
+            CREATED_AT,
+        )
+
+    def _compile_portable_candidate(self, name: str) -> Path:
+        candidate = self.root / f"{name}-candidate"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"].update(
+            {
+                "output_root": str(candidate),
+                "execution_root": str(self.root / f"{name}-execution"),
+                "portability_mode": "LOGICAL_RESOURCE_URI",
+            }
+        )
+        ir["target"]["start_package_immutability_policy"] = {
+            "candidate_root_read_only_after_atomic_publication": True,
+            "candidate_execution_roots_must_not_overlap": True,
+        }
+        compile_candidate(
+            ir,
+            SPEC_ROOT,
+            self.root / f"{name}-staging",
+            candidate,
+            CREATED_AT,
+        )
+        return candidate
+
+    def _compile_best_effort_permission_candidate(self, name: str) -> Path:
+        candidate = self.root / f"{name}-candidate"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"].update(
+            {
+                "output_root": str(candidate),
+                "execution_root": str(self.root / f"{name}-execution"),
+                "portability_mode": "LOGICAL_RESOURCE_URI",
+            }
+        )
+        ir["target"]["start_package_immutability_policy"] = {
+            "candidate_root_read_only_after_atomic_publication": True,
+            "candidate_execution_roots_must_not_overlap": True,
+            "candidate_write_after_publication": "FORBIDDEN",
+            "physical_permission_enforcement": "BEST_EFFORT_PERSONAL_LOCAL",
+            "permission_drift_disposition": "NON_BLOCKING_DIAGNOSTIC",
+        }
+        compile_candidate(
+            ir,
+            SPEC_ROOT,
+            self.root / f"{name}-staging",
+            candidate,
+            CREATED_AT,
+        )
+        return candidate
+
+    def _mutate_json(self, relative_path: str, change) -> None:
+        self._make_tree_writable(self.candidate)
+        path = self.candidate / relative_path
+        value = json.loads(path.read_text(encoding="utf-8"))
+        change(value)
+        path.write_text(
+            json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    def _finding_codes(self) -> set[str]:
+        report = validate_candidate(self.candidate)
+        return {item["code"] for item in report["blocking_findings"]}
+
+    def test_declared_executable_hash_uses_runtime_binding_not_machine_default(self) -> None:
+        executable = self.root / "alternate-toolchain/python3"
+        executable.parent.mkdir(parents=True)
+        executable.write_bytes(b"portable test interpreter")
+        binding = {
+            "executable_abs": str(executable),
+            "executable_sha256": _file_hash(executable),
+        }
+
+        self.assertTrue(_declared_executable_hash_matches(binding))
+        self.assertFalse(
+            _declared_executable_hash_matches(
+                {**binding, "executable_sha256": "0" * 64}
+            )
+        )
+        self.assertFalse(
+            _declared_executable_hash_matches(
+                {**binding, "executable_abs": "relative/python3"}
+            )
+        )
+
+    def _write_json(self, path: Path, value: dict) -> None:
+        self._make_tree_writable(path.parent)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    def _materialized_codex_candidate(self) -> tuple[Path, Path, Path]:
+        candidate = self.root / "materialized-candidate"
+        build_root = self.root / "materialized-build-program"
+        execution = build_root / "execution"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"].update(
+            {"output_root": str(candidate), "execution_root": str(execution)}
+        )
+        ir["target"]["start_package_immutability_policy"] = {
+            "candidate_root_read_only_after_atomic_publication": True,
+            "candidate_execution_roots_must_not_overlap": True,
+        }
+        compile_candidate(
+            ir,
+            SPEC_ROOT,
+            self.root / "materialized-staging",
+            candidate,
+            CREATED_AT,
+        )
+
+        launcher = execution / "planned_executors/bin/codex"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        candidate_hash = _candidate_tree_hash(candidate)
+        launcher_hash = _file_hash(launcher)
+
+        authorization_path = (
+            execution
+            / "control_plane/LINKAGE_CODEX_TARGET_HASH_DRIFT_REPAIR_REVERIFY_AUTHORIZATION.json"
+        )
+        authorization = {
+            "status": "GRANTED",
+            "candidate_content_sha256": candidate_hash,
+            "driver_execution_authorized": False,
+            "workpack_execution_authorized": False,
+            "scope": {
+                "allowed_write_paths": [
+                    "execution/planned_executors/bin/codex"
+                ]
+            },
+        }
+        self._write_json(authorization_path, authorization)
+
+        attestation_path = (
+            execution
+            / "evidence/linkage-bootstrap-executor-repair/REVERIFICATION_ATTESTATION.json"
+        )
+        attestation = {
+            "status": "PASS",
+            "blocking_findings": [],
+            "candidate_content_sha256": candidate_hash,
+            "authorization_ref": (
+                "execution/control_plane/"
+                "LINKAGE_CODEX_TARGET_HASH_DRIFT_REPAIR_REVERIFY_AUTHORIZATION.json"
+            ),
+            "authorization_sha256": _file_hash(authorization_path),
+            "codex_launcher_ref": "execution/planned_executors/bin/codex",
+            "codex_launcher_sha256": launcher_hash,
+        }
+        self._write_json(attestation_path, attestation)
+
+        descriptor_path = (
+            execution
+            / "control_plane/"
+            "LINKAGE_CODEX_EXECUTOR_DESCRIPTOR_AFTER_TARGET_HASH_REPAIR.json"
+        )
+        descriptor = {
+            "status": (
+                "REPAIRED_REVERIFIED_READY_FOR_NEW_"
+                "LINKAGE_BOOTSTRAP_RETRY_AUTHORIZATION"
+            ),
+            "candidate_content_sha256": candidate_hash,
+            "launcher_abs": str(launcher),
+            "launcher_sha256": launcher_hash,
+            "authorization_ref": (
+                "execution/control_plane/"
+                "LINKAGE_CODEX_TARGET_HASH_DRIFT_REPAIR_REVERIFY_AUTHORIZATION.json"
+            ),
+            "authorization_sha256": _file_hash(authorization_path),
+            "reverification_attestation_ref": (
+                "execution/evidence/linkage-bootstrap-executor-repair/"
+                "REVERIFICATION_ATTESTATION.json"
+            ),
+            "reverification_attestation_sha256": _file_hash(attestation_path),
+        }
+        self._write_json(descriptor_path, descriptor)
+
+        receipt_path = (
+            execution
+            / "control_plane/"
+            "LINKAGE_CODEX_TARGET_HASH_REPAIR_REVERIFICATION_RECEIPT.json"
+        )
+        receipt = {
+            "status": (
+                "COMPLETE_READY_FOR_HASH_BOUND_2_TRANSITION_"
+                "LINKAGE_BOOTSTRAP_RETRY_AUTHORIZATION"
+            ),
+            "candidate_content_sha256": candidate_hash,
+            "authorization_ref": (
+                "execution/control_plane/"
+                "LINKAGE_CODEX_TARGET_HASH_DRIFT_REPAIR_REVERIFY_AUTHORIZATION.json"
+            ),
+            "authorization_sha256": _file_hash(authorization_path),
+            "descriptor_ref": (
+                "execution/control_plane/"
+                "LINKAGE_CODEX_EXECUTOR_DESCRIPTOR_AFTER_TARGET_HASH_REPAIR.json"
+            ),
+            "descriptor_sha256": _file_hash(descriptor_path),
+            "codex_launcher_ref": "execution/planned_executors/bin/codex",
+            "codex_launcher_sha256": launcher_hash,
+            "reverification_attestation_ref": (
+                "execution/evidence/linkage-bootstrap-executor-repair/"
+                "REVERIFICATION_ATTESTATION.json"
+            ),
+            "reverification_attestation_sha256": _file_hash(attestation_path),
+        }
+        self._write_json(receipt_path, receipt)
+
+        event = {
+            "command": "advance",
+            "event_type": "PROGRAM_DRIVER_STATE_COMMIT",
+            "payload": {"status": "PASS"},
+            "previous_event_hash": None,
+        }
+        event["event_hash"] = _json_hash(event)
+        runtime_root = execution / "control_plane/runtime"
+        runtime_root.mkdir(parents=True)
+        (
+            runtime_root / "PHASE_TRANSITION_LEDGER.jsonl"
+        ).write_text(
+            json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        runtime = {
+            "candidate_content_sha256": candidate_hash,
+            "open_blocker_codes": [],
+            "recovery": {"required": False},
+            "side_effects_allowed": False,
+            "active_dag_node": None,
+            "active_workpack_id": None,
+            "active_pipeline_action_id": None,
+            "last_transition_event_hash": event["event_hash"],
+        }
+        runtime["state_hash"] = _json_hash(runtime)
+        self._write_json(
+            runtime_root / "PROGRAM_DRIVER_RUNTIME_STATE.json", runtime
+        )
+        return candidate, execution, launcher
+
+    @staticmethod
+    def _tree_snapshot(root: Path) -> dict[str, str]:
+        return {
+            path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(root.rglob("*"))
+            if path.is_file()
+        }
+
+    def test_complete_fixture_compiles_and_validates(self) -> None:
+        report = validate_candidate(self.candidate)
+
+        self.assertEqual(report["status"], "PASS")
+        self.assertTrue(report["valid"])
+        self.assertEqual(report["blocking_findings"], [])
+        self.assertGreaterEqual(self.compile_result["file_count"], 72)
+        self.assertEqual(
+            self.compile_result["authoring_terminal_state"],
+            "START_PACKAGE_CANDIDATE_READY_FOR_HUMAN_REVIEW",
+        )
+        for directory in ("external_lab", "linkage_review", "main_build"):
+            self.assertTrue(
+                (self.candidate / "project_start_packages" / directory).is_dir()
+            )
+        self.assertFalse(
+            any(
+                path.stat().st_mode & 0o222
+                for path in (self.candidate, *self.candidate.rglob("*"))
+                if not path.is_symlink()
+            )
+        )
+        manifest = json.loads(
+            (self.candidate / "THREE_PROJECT_PROGRAM_MANIFEST.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            manifest["epoch_domains"]["projection_rule"],
+            "NULL_REQUIREMENT_EPOCHS_TO_EXPLICIT_UNBOUND_ZERO_SENTINEL",
+        )
+        self.assertTrue(manifest["epoch_domains"]["unbound_zero_semantics"])
+        consistency = {
+            item["check_id"]: item for item in report["checks"]
+        }
+        self.assertEqual(
+            consistency["FACTORY_LOCAL_SOURCE_CONSISTENCY"]["status"],
+            "NOT_EVALUATED",
+        )
+        self.assertFalse(report["external_authority_oracles_evaluated"])
+        acceptance = json.loads(
+            (self.candidate / "validation/ACCEPTANCE_CASES.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        case = acceptance["cases"][0]
+        self.assertEqual(case["executor_command_id"], "LAB-RUN-ACCEPTANCE-CASE")
+        self.assertTrue(case["fixture_ref"].startswith("harness-resource://candidate/"))
+        self.assertTrue(case["result_ref"].startswith("harness-resource://execution/"))
+        self.assertEqual(
+            case["oracle_contract"]["executor_command_id"],
+            "LAB-EVALUATE-CASE-ORACLE",
+        )
+
+    def test_physical_candidate_write_bit_is_rejected(self) -> None:
+        path = self.candidate / "README.md"
+        path.chmod(path.stat().st_mode | 0o200)
+
+        self.assertIn("CANDIDATE_PHYSICALLY_WRITABLE", self._finding_codes())
+
+    def test_personal_local_permission_drift_is_nonblocking(self) -> None:
+        candidate = self._compile_best_effort_permission_candidate(
+            "best-effort-permission"
+        )
+        embedded = json.loads(
+            (
+                candidate
+                / "validation/START_PACKAGE_VALIDATION_REPORT.json"
+            ).read_text(encoding="utf-8")
+        )
+        embedded_permission = next(
+            check
+            for check in embedded["checks"]
+            if check["check_id"] == "PHYSICAL_CANDIDATE_READ_ONLY"
+        )
+        self.assertEqual(
+            embedded_permission["status"], "DEFERRED_NOT_OBSERVED"
+        )
+        self.assertEqual(
+            embedded_permission["observation_status"],
+            "NOT_OBSERVED_PREPUBLICATION",
+        )
+        self.assertEqual(
+            embedded_permission["validation_basis"],
+            "PREPUBLICATION_STAGING_NOT_YET_SEALED",
+        )
+        candidate.chmod(candidate.stat().st_mode | 0o200)
+
+        report = validate_candidate(candidate)
+        permission_check = next(
+            check
+            for check in report["checks"]
+            if check["check_id"] == "PHYSICAL_CANDIDATE_READ_ONLY"
+        )
+
+        self.assertEqual(report["status"], "PASS", report)
+        self.assertEqual(permission_check["status"], "PASS")
+        self.assertEqual(
+            permission_check["enforcement"], "BEST_EFFORT_PERSONAL_LOCAL"
+        )
+        self.assertEqual(permission_check["findings"], [])
+        self.assertIn(
+            "CANDIDATE_PERMISSION_DRIFT",
+            {item["code"] for item in report["non_blocking_findings"]},
+        )
+
+    def test_personal_local_content_drift_remains_blocking(self) -> None:
+        candidate = self._compile_best_effort_permission_candidate(
+            "best-effort-content-drift"
+        )
+        path = candidate / "README.md"
+        path.chmod(path.stat().st_mode | 0o200)
+        path.write_text(
+            path.read_text(encoding="utf-8") + "content drift\n",
+            encoding="utf-8",
+        )
+
+        report = validate_candidate(candidate)
+
+        self.assertEqual(report["status"], "FAIL")
+        self.assertIn(
+            "PORTABLE_FILE_HASH_MISMATCH",
+            {item["code"] for item in report["blocking_findings"]},
+        )
+
+    def test_case_fixture_hash_and_executor_binding_are_enforced(self) -> None:
+        self._make_tree_writable(self.candidate)
+        acceptance = json.loads(
+            (self.candidate / "validation/ACCEPTANCE_CASES.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        fixture_ref = acceptance["cases"][0]["fixture_ref"]
+        fixture = self.candidate / fixture_ref.removeprefix(
+            "harness-resource://candidate/"
+        )
+        fixture.write_text("{}\n", encoding="utf-8")
+
+        self.assertIn(
+            "EXECUTABLE_CASE_ORACLE_INCOMPLETE", self._finding_codes()
+        )
+
+    def test_string_tool_requirements_and_repository_pins_are_preserved(self) -> None:
+        candidate = self.root / "tool-and-source-candidate"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"]["output_root"] = str(candidate)
+        ir["target"]["required_tools"] = [
+            "Python 3.12",
+            "Node.js 22 LTS",
+            "Remotion",
+            "FFmpeg",
+            "FFprobe",
+            "MLX-Audio",
+            "Qwen3-TTS 0.6B 8-bit",
+            "Qwen3 ForcedAligner 0.6B 8-bit",
+            "Kokoro 82M fallback",
+            "pinned video-shotcraft",
+        ]
+        source = ir["sources"][0]
+        source.update(
+            {
+                "scope": "Reference repository https://github.com/example/example",
+                "repository_url": "https://github.com/example/example",
+                "revision": "main",
+                "commit_sha": "1" * 40,
+                "git_tree_oid": "2" * 40,
+                "tree_sha256": source["sha256"],
+                "license_spdx": "MIT",
+            }
+        )
+        compile_candidate(
+            ir,
+            SPEC_ROOT,
+            self.root / "tool-and-source-staging",
+            candidate,
+            CREATED_AT,
+        )
+
+        toolchain = json.loads(
+            (candidate / "validation/TOOLCHAIN_MANIFEST.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        labels = {
+            item.get("requirement_label") for item in toolchain["required_tools"]
+        }
+        self.assertTrue(set(ir["target"]["required_tools"]).issubset(labels))
+        source_manifest = json.loads(
+            (candidate / "canonical_sources/SOURCE_MANIFEST.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        compiled_source = next(
+            item
+            for item in source_manifest["sources"]
+            if item["source_id"] == source["source_id"]
+        )
+        self.assertEqual(compiled_source["commit_sha"], "1" * 40)
+        receipt = json.loads(
+            (
+                candidate
+                / "canonical_sources/evidence/SRC-CHAT-001.source_receipt.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(receipt["repository_metadata"]["git_tree_oid"], "2" * 40)
+        self.assertEqual(validate_candidate(candidate)["status"], "PASS")
+
+    def test_factory_epoch_portability_and_target_subauthorizations_are_compiled(
+        self,
+    ) -> None:
+        candidate = self.root / "epoch-portable-candidate"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"].update(
+            {"output_root": str(candidate), "version": "1.0.0"}
+        )
+        common = {
+            "source_id": "SRC-CHAT-001",
+            "source_locator": "turn-1#target-side-effect-gates",
+            "text_or_lossless_paraphrase": "A target side effect requires a separate exact authorization.",
+            "modality": "MUST",
+            "qualifiers": [],
+            "order_constraints": [],
+            "units": [],
+            "defaults": [],
+            "cancel_retry_timeout": [],
+            "compatibility_constraints": [],
+            "explicit_non_goals": [],
+            "owner": "MAIN_HARNESS_BUILD",
+            "verification_mode": "AUTHORIZATION_GATE_RECEIPT",
+            "status": "PLANNED_NOT_VERIFIED",
+        }
+        ir["atoms"].extend(
+            [
+                {
+                    **common,
+                    "atom_id": "ATOM-TARGET-SKILL-EXECUTION-GATE",
+                    "error_semantics": [
+                        "TARGET_SKILL_EXECUTION_AUTHORIZATION_REQUIRED"
+                    ],
+                },
+                {
+                    **common,
+                    "atom_id": "ATOM-ASSET-ROUTING",
+                    "error_semantics": [
+                        "CODEX_IMAGE_GENERATION_AUTHORIZATION_REQUIRED"
+                    ],
+                },
+            ]
+        )
+        ir["acceptance_cases"].append(
+            {
+                "case_id": "AC-TARGET-SIDE-EFFECT-GATES",
+                "atom_ids": [
+                    "ATOM-TARGET-SKILL-EXECUTION-GATE",
+                    "ATOM-ASSET-ROUTING",
+                ],
+                "description": "Both target-side effects remain denied without separate exact authorizations.",
+                "evidence_type": "TARGET_SUBAUTHORIZATION_GATE_RECEIPTS",
+            }
+        )
+        compile_candidate(
+            ir,
+            SPEC_ROOT,
+            self.root / "epoch-portable-staging",
+            candidate,
+            CREATED_AT,
+            active_requirement_epoch=4,
+        )
+
+        package = json.loads(
+            (candidate / "PACKAGE_MANIFEST.json").read_text(encoding="utf-8")
+        )
+        context = json.loads(
+            (candidate / "START_CONTEXT.json").read_text(encoding="utf-8")
+        )
+        provenance = json.loads(
+            (candidate / "FACTORY_PROVENANCE.json").read_text(encoding="utf-8")
+        )
+        policy = json.loads(
+            (candidate / "AUTHORIZATION_POLICY.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            {package["requirement_epoch"], context["requirement_epoch"], provenance["requirement_epoch"]},
+            {4},
+        )
+        self.assertEqual(package["version"], "1.0.0")
+        self.assertEqual(context["candidate_root"], "harness-resource://candidate")
+        self.assertEqual(context["execution_root"], "harness-resource://execution")
+        for authorization_class in (
+            "TARGET_SKILL_EXECUTION_AUTHORIZATION",
+            "CODEX_IMAGE_GENERATION_AUTHORIZATION",
+        ):
+            self.assertIn(authorization_class, policy["authorization_classes"])
+            authorization = json.loads(
+                (candidate / f"{authorization_class}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(authorization["status"], "NOT_GRANTED")
+            self.assertIsNone(authorization["exact_scope"])
+            self.assertEqual(
+                authorization["exact_scope_contract"],
+                {
+                    "required_fields": [
+                        "target_skill_id",
+                        "job_id",
+                        "commit_sha",
+                        "input_manifest_sha256",
+                        "environment_id",
+                        "environment_manifest_ref",
+                        "environment_manifest_sha256",
+                        "output_root_ref",
+                        "output_manifest_sha256",
+                    ],
+                    "scope_kind": (
+                        "EXACT_JOB_COMMIT_INPUT_ENVIRONMENT_AND_OUTPUT"
+                    ),
+                    "program_wide_scope_forbidden": True,
+                },
+            )
+            for field in (
+                "environment_receipt_ref",
+                "environment_receipt_sha256",
+                "output_receipt_ref",
+                "output_receipt_sha256",
+            ):
+                self.assertIsNone(authorization[field])
+        self.assertEqual(validate_candidate(candidate)["status"], "PASS")
+
+    def test_immutable_candidate_uses_disjoint_external_execution_root(self) -> None:
+        candidate = self.root / "immutable-candidate"
+        execution = self.root / "build-program" / "execution"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"].update(
+            {"output_root": str(candidate), "execution_root": str(execution)}
+        )
+        ir["target"]["start_package_immutability_policy"] = {
+            "candidate_root_read_only_after_atomic_publication": True,
+            "candidate_execution_roots_must_not_overlap": True,
+        }
+
+        compile_candidate(
+            ir,
+            SPEC_ROOT,
+            self.root / "immutable-staging",
+            candidate,
+            CREATED_AT,
+        )
+
+        context = json.loads(
+            (candidate / "START_CONTEXT.json").read_text(encoding="utf-8")
+        )
+        capsule = json.loads(
+            (candidate / "CAPSULE.json").read_text(encoding="utf-8")
+        )
+        driver = json.loads(
+            (candidate / "PROGRAM_DRIVER_CONTRACT.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        projects = json.loads(
+            (candidate / "THREE_PROJECT_PROGRAM_MANIFEST.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(context["candidate_root"], "harness-resource://candidate")
+        self.assertEqual(context["target_root"], "harness-resource://candidate")
+        self.assertEqual(context["execution_root"], "harness-resource://execution")
+        self.assertEqual(
+            context["candidate_root_access"],
+            "READ_ONLY_AFTER_ATOMIC_PUBLICATION",
+        )
+        self.assertFalse(context["candidate_execution_root_overlap"])
+        self.assertIn(
+            "harness-resource://candidate", capsule["forbidden_write_paths"]
+        )
+        self.assertTrue(
+            capsule["workspace_root_abs"].startswith(
+                "harness-resource://execution/"
+            )
+        )
+        self.assertEqual(
+            driver["driver_entrypoint_abs"],
+            "harness-resource://execution/control_plane/.venv/bin/program-driver",
+        )
+        self.assertTrue(
+            all(
+                item["root_abs"].startswith("harness-resource://execution/")
+                for item in projects["projects"]
+            )
+        )
+        self.assertFalse(execution.exists())
+        self.assertEqual(validate_candidate(candidate)["status"], "PASS")
+
+    def test_portable_candidate_uses_logical_roots_and_survives_relocation(
+        self,
+    ) -> None:
+        candidate = self.root / "portable-candidate"
+        execution = self.root / "portable-execution"
+        historical_candidate = self.root / "historical-candidate-v0_10"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"].update(
+            {
+                "output_root": str(candidate),
+                "execution_root": str(execution),
+                "portability_mode": "LOGICAL_RESOURCE_URI",
+                "previous_output_root": "/Users/example/legacy-candidate",
+            }
+        )
+        ir["target"]["start_package_immutability_policy"] = {
+            "candidate_root_read_only_after_atomic_publication": True,
+            "candidate_execution_roots_must_not_overlap": True,
+        }
+        ir.setdefault("decisions", []).append(
+            {
+                "decision_id": "DEC-HISTORICAL-LOCAL-ROOT",
+                "answer": (
+                    "Preserve the historical root "
+                    f"{historical_candidate} as read-only evidence."
+                ),
+            }
+        )
+        ir["sources"].append(
+            {
+                "source_id": "SRC-LOCAL-001",
+                "path_or_uri": "/Users/example/private/source.md",
+                "snapshot_path": "/Users/example/private/snapshot.md",
+                "sha256": (
+                    "aa5f7f0f12de3cbb7391bd3f48e4bbbf67d60667aa6c6907ee76075b35594633"
+                ),
+                "authority_level": "HUMAN_APPROVED",
+                "scope": "portable path regression fixture",
+                "loaded_completely": True,
+            }
+        )
+        immutable_snapshot = self.root / "author-source-with-path-example.md"
+        immutable_snapshot.write_text(
+            "Portable policy example: /Users/example must never become runtime identity.\n",
+            encoding="utf-8",
+        )
+        ir["sources"].append(
+            {
+                "source_id": "SRC-IMMUTABLE-PORTABLE-001",
+                "path_or_uri": str(immutable_snapshot),
+                "snapshot_path": str(immutable_snapshot),
+                "sha256": hashlib.sha256(immutable_snapshot.read_bytes()).hexdigest(),
+                "authority_level": "HUMAN_APPROVED",
+                "scope": "exact portable source evidence regression fixture",
+                "loaded_completely": True,
+                "copy_policy": "COPY_IMMUTABLE_SNAPSHOT",
+            }
+        )
+
+        compile_candidate(
+            ir,
+            SPEC_ROOT,
+            self.root / "portable-staging",
+            candidate,
+            CREATED_AT,
+        )
+
+        context = json.loads(
+            (candidate / "START_CONTEXT.json").read_text(encoding="utf-8")
+        )
+        manifest = json.loads(
+            (candidate / "validation/PORTABILITY_MANIFEST.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        driver = json.loads(
+            (candidate / "PROGRAM_DRIVER_CONTRACT.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            context["candidate_root"], "harness-resource://candidate"
+        )
+        self.assertEqual(context["target_root"], "harness-resource://candidate")
+        self.assertEqual(
+            context["execution_root"], "harness-resource://execution"
+        )
+        self.assertEqual(
+            driver["driver_entrypoint_abs"],
+            (
+                "harness-resource://execution/control_plane/.venv/bin/"
+                "program-driver"
+            ),
+        )
+        self.assertFalse(manifest["resolved_paths_persisted"])
+        self.assertEqual(
+            manifest["release_requirements"]["primary_runtime"], "Codex"
+        )
+        readme = (candidate / "README.md").read_text(encoding="utf-8")
+        self.assertIn("## Portable release binding", readme)
+        self.assertIn("python3 tools/self_check.py", readme)
+        self.assertIn("Required plugins: none declared", readme)
+        self.assertTrue((candidate / "tools/self_check.py").is_file())
+        self.assertTrue(
+            (candidate / "validation/PORTABLE_FILE_MANIFEST.json").is_file()
+        )
+        self.assertTrue((candidate / "tools/setup_runtime.py").is_file())
+        toolchain = json.loads(
+            (candidate / "validation/TOOLCHAIN_MANIFEST.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(toolchain["coverage_status"], "PASS")
+        self.assertEqual(toolchain["undeclared_provider_ids"], [])
+        self.assertTrue(
+            {
+                "python",
+                "codex-cli",
+                "pytest",
+                "build",
+                "program-driver",
+                "linkage-review-cli",
+                "linkage-review-module",
+                "external-lab-module",
+            }.issubset(
+                {item["tool_id"] for item in toolchain["required_tools"]}
+            )
+        )
+        source_index = json.loads(
+            (
+                candidate / "canonical_sources/PORTABLE_SOURCE_INDEX.json"
+            ).read_text(encoding="utf-8")
+        )
+        embedded = next(
+            item
+            for item in source_index["sources"]
+            if item["source_id"] == "SRC-IMMUTABLE-PORTABLE-001"
+        )
+        self.assertTrue(embedded["payload_embedded"])
+        self.assertTrue(
+            embedded["payload_ref"].startswith(
+                "harness-resource://candidate/canonical_sources/evidence/"
+            )
+        )
+        provenance = json.loads(
+            (candidate / "FACTORY_PROVENANCE.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            provenance["factory_id"],
+            "HARNESS_FOUNDRY_V2_9_CHAT_FACTORY_V0_1",
+        )
+        self.assertRegex(
+            provenance["factory_implementation_tree_sha256"], r"^[0-9a-f]{64}$"
+        )
+        for path in candidate.rglob("*"):
+            self.assertFalse(path.is_symlink())
+            if path.is_file() and path.suffix in {".json", ".jsonl", ".md"}:
+                text = path.read_text(encoding="utf-8")
+                self.assertNotIn(str(self.root), text)
+                self.assertNotIn("/Users/example", text)
+
+        relocated = self.root / "different-machine" / "shared-candidate"
+        shutil.copytree(candidate, relocated)
+        self.assertEqual(validate_candidate(relocated)["status"], "PASS")
+        completed = subprocess.run(
+            [sys.executable, "tools/self_check.py"],
+            cwd=relocated,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(json.loads(completed.stdout)["status"], "PASS")
+
+        candidate_before_setup = {
+            path.relative_to(relocated).as_posix(): path.read_bytes()
+            for path in relocated.rglob("*")
+            if path.is_file()
+        }
+        relocated_execution = self.root / "different-machine" / "execution"
+        setup = subprocess.run(
+            [
+                sys.executable,
+                "tools/setup_runtime.py",
+                "--execution-root",
+                str(relocated_execution),
+            ],
+            cwd=relocated,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(setup.returncode, 0, setup.stderr or setup.stdout)
+        self.assertEqual(json.loads(setup.stdout)["status"], "PASS")
+        candidate_after_setup = {
+            path.relative_to(relocated).as_posix(): path.read_bytes()
+            for path in relocated.rglob("*")
+            if path.is_file()
+        }
+        self.assertEqual(candidate_after_setup, candidate_before_setup)
+        receipt = json.loads(
+            (
+                relocated_execution
+                / ".harness-foundry/runtime_binding.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertFalse(receipt["candidate_write_performed"])
+        self.assertGreater(receipt["binding_count"], 0)
+        self.assertTrue(
+            all(
+                item["status"] in {"BOUND_EXISTING", "BOUND_PLANNED"}
+                for item in receipt["bindings"]
+            )
+        )
+
+        self._make_tree_writable(relocated)
+
+        relocated_self_check = relocated / "tools/self_check.py"
+        relocated_self_check.unlink()
+        missing_self_check_codes = {
+            item["code"]
+            for item in validate_candidate(relocated)["blocking_findings"]
+        }
+        self.assertIn("PORTABLE_SELF_CHECK_MISSING", missing_self_check_codes)
+        self.assertIn("PORTABLE_INVENTORY_MISMATCH", missing_self_check_codes)
+        shutil.copy2(candidate / "tools/self_check.py", relocated_self_check)
+
+        relocated_setup = relocated / "tools/setup_runtime.py"
+        relocated_setup.unlink()
+        missing_setup_codes = {
+            item["code"]
+            for item in validate_candidate(relocated)["blocking_findings"]
+        }
+        self.assertIn("RUNTIME_BINDING_CONTRACT_INVALID", missing_setup_codes)
+        shutil.copy2(candidate / "tools/setup_runtime.py", relocated_setup)
+
+        command_path = relocated / "COMMAND_MANIFEST.json"
+        command = json.loads(command_path.read_text(encoding="utf-8"))
+        command["commands"][0]["executable"] = "/Users/example/bin/codex"
+        command_path.write_text(
+            json.dumps(command, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        codes = {
+            item["code"]
+            for item in validate_candidate(relocated)["blocking_findings"]
+        }
+        self.assertIn("LOCAL_PATH_BINDING", codes)
+
+        command_path.write_bytes((candidate / "COMMAND_MANIFEST.json").read_bytes())
+        portability_path = relocated / "validation/PORTABILITY_MANIFEST.json"
+        toolchain_path = relocated / "validation/TOOLCHAIN_MANIFEST.json"
+        portability = json.loads(portability_path.read_text(encoding="utf-8"))
+        toolchain = json.loads(toolchain_path.read_text(encoding="utf-8"))
+        portability["release_requirements"]["required_tools"] = [
+            item
+            for item in portability["release_requirements"]["required_tools"]
+            if item["tool_id"] != "codex-cli"
+        ]
+        toolchain["required_tools"] = [
+            item
+            for item in toolchain["required_tools"]
+            if item["tool_id"] != "codex-cli"
+        ]
+        portability_path.write_text(
+            json.dumps(portability, ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n",
+            encoding="utf-8",
+        )
+        toolchain_path.write_text(
+            json.dumps(toolchain, ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n",
+            encoding="utf-8",
+        )
+        undeclared_codes = {
+            item["code"]
+            for item in validate_candidate(relocated)["blocking_findings"]
+        }
+        self.assertIn("TOOLCHAIN_DEPENDENCY_UNDECLARED", undeclared_codes)
+
+    def test_runtime_binder_rejects_dangling_uri_without_creating_root(
+        self,
+    ) -> None:
+        candidate = self.root / "atomic-binding-candidate"
+        execution = self.root / "atomic-binding-execution"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"].update(
+            {
+                "output_root": str(candidate),
+                "execution_root": str(execution),
+                "portability_mode": "LOGICAL_RESOURCE_URI",
+            }
+        )
+        ir["target"]["start_package_immutability_policy"] = {
+            "candidate_root_read_only_after_atomic_publication": True,
+            "candidate_execution_roots_must_not_overlap": True,
+        }
+        compile_candidate(
+            ir,
+            SPEC_ROOT,
+            self.root / "atomic-binding-staging",
+            candidate,
+            CREATED_AT,
+        )
+
+        self._make_tree_writable(candidate)
+        readme_path = candidate / "README.md"
+        readme_path.write_text(
+            readme_path.read_text(encoding="utf-8")
+            + "\nDangling: harness-resource://candidate/tools/missing-runtime.py\n",
+            encoding="utf-8",
+        )
+        manifest_path = candidate / "validation/PORTABLE_FILE_MANIFEST.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["files"]["README.md"] = _file_hash(readme_path)
+        self._write_json(manifest_path, manifest)
+
+        self.assertIn(
+            "CANDIDATE_RESOURCE_URI_DANGLING",
+            {
+                finding["code"]
+                for finding in validate_candidate(candidate)["blocking_findings"]
+            },
+        )
+        standalone = subprocess.run(
+            [sys.executable, "tools/self_check.py"],
+            cwd=candidate,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(standalone.returncode, 0)
+        self.assertIn(
+            "CANDIDATE_RESOURCE_URI_DANGLING",
+            {
+                finding["code"]
+                for finding in json.loads(standalone.stdout)["findings"]
+            },
+        )
+
+        binding = subprocess.run(
+            [
+                sys.executable,
+                "tools/setup_runtime.py",
+                "--execution-root",
+                str(execution),
+            ],
+            cwd=candidate,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(binding.returncode, 0)
+        self.assertIn("Candidate Resource URI is dangling", binding.stdout)
+        self.assertFalse(execution.exists())
+
+    def test_physical_candidate_uri_outside_inventory_fails_both_oracles(
+        self,
+    ) -> None:
+        candidate = self.root / "uninventoried-uri-candidate"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"].update(
+            {
+                "output_root": str(candidate),
+                "execution_root": str(self.root / "uninventoried-uri-execution"),
+                "portability_mode": "LOGICAL_RESOURCE_URI",
+            }
+        )
+        ir["target"]["start_package_immutability_policy"] = {
+            "candidate_root_read_only_after_atomic_publication": True,
+            "candidate_execution_roots_must_not_overlap": True,
+        }
+        compile_candidate(
+            ir,
+            SPEC_ROOT,
+            self.root / "uninventoried-uri-staging",
+            candidate,
+            CREATED_AT,
+        )
+        self._make_tree_writable(candidate)
+        extra = candidate / "tools/uninventoried-runtime.py"
+        extra.write_text("# physical but not inventoried\n", encoding="utf-8")
+        report_path = candidate / "validation/START_PACKAGE_VALIDATION_REPORT.json"
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        report["uninventoried_uri"] = (
+            "harness-resource://candidate/tools/uninventoried-runtime.py"
+        )
+        self._write_json(report_path, report)
+
+        factory_codes = {
+            finding["code"]
+            for finding in validate_candidate(candidate)["blocking_findings"]
+        }
+        self.assertIn(
+            "CANDIDATE_RESOURCE_URI_OUTSIDE_PORTABLE_INVENTORY",
+            factory_codes,
+        )
+        standalone = subprocess.run(
+            [sys.executable, "tools/self_check.py"],
+            cwd=candidate,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn(
+            "CANDIDATE_RESOURCE_URI_OUTSIDE_PORTABLE_INVENTORY",
+            {
+                finding["code"]
+                for finding in json.loads(standalone.stdout)["findings"]
+            },
+        )
+
+    def test_authorized_materialized_driver_preserves_candidate_validity(self) -> None:
+        candidate = self.root / "approved-candidate"
+        build_root = self.root / "approved-build-program"
+        execution = build_root / "execution"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"].update(
+            {"output_root": str(candidate), "execution_root": str(execution)}
+        )
+        ir["target"]["start_package_immutability_policy"] = {
+            "candidate_root_read_only_after_atomic_publication": True,
+            "candidate_execution_roots_must_not_overlap": True,
+        }
+        compile_candidate(
+            ir,
+            SPEC_ROOT,
+            self.root / "approved-staging",
+            candidate,
+            CREATED_AT,
+        )
+
+        control = execution / "control_plane"
+        executable = control / ".venv/bin/program-driver"
+        executable.parent.mkdir(parents=True)
+        executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        executable.chmod(0o755)
+        executable_hash = hashlib.sha256(executable.read_bytes()).hexdigest()
+        candidate_hash = _candidate_tree_hash(candidate)
+
+        authorization_path = control / "DRIVER_VALIDATION_AUTHORIZATION.json"
+        authorization = {
+            "authorization_class": "PROJECT_VALIDATION_AUTHORIZATION",
+            "forbidden_actions": ["PROGRAM_DRIVER_START"],
+            "max_transitions": 1,
+            "may_auto_advance": False,
+            "scope": {
+                "dag_node_ids": ["PROGRAM_DRIVER_RUNTIME_VERIFIED"],
+                "workpack_ids": [],
+            },
+            "status": "GRANTED",
+        }
+        authorization_path.write_text(
+            json.dumps(authorization, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        authorization_hash = hashlib.sha256(
+            authorization_path.read_bytes()
+        ).hexdigest()
+
+        attestation_path = (
+            execution
+            / "evidence/driver-runtime-verification/RUNTIME_ATTESTATION.json"
+        )
+        attestation_path.parent.mkdir(parents=True)
+        attestation = {
+            "driver_started": False,
+            "executor_sha256": executable_hash,
+            "release_candidate_hash": candidate_hash,
+            "self_reported_receipt_used": False,
+            "status": "PASS",
+        }
+        attestation_path.write_text(
+            json.dumps(attestation, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        attestation_hash = hashlib.sha256(attestation_path.read_bytes()).hexdigest()
+
+        receipt = {
+            "authorization_ref": authorization_path.relative_to(
+                build_root
+            ).as_posix(),
+            "authorization_sha256": authorization_hash,
+            "candidate_content_sha256": candidate_hash,
+            "driver_entrypoint_ref": executable.relative_to(build_root).as_posix(),
+            "driver_entrypoint_sha256": executable_hash,
+            "driver_started": False,
+            "execution_started": False,
+            "install_started": False,
+            "runtime_attestation_ref": attestation_path.relative_to(
+                build_root
+            ).as_posix(),
+            "runtime_attestation_sha256": attestation_hash,
+            "status": "DRIVER_RUNTIME_VERIFIED_STOPPED_BEFORE_START",
+            "workpack_execution_started": False,
+        }
+        (control / "DRIVER_RUNTIME_VERIFICATION_RECEIPT.json").write_text(
+            json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+        self.assertEqual(validate_candidate(candidate)["status"], "PASS")
+
+    def test_materialization_precondition_requires_consumed_uninvoked_receipt(
+        self,
+    ) -> None:
+        candidate = self.root / "materialization-candidate"
+        execution = self.root / "materialization-runtime"
+        control = execution / "control_plane"
+        evidence = (
+            execution
+            / "evidence/control_plane_bootstrap/PROGRAM_DRIVER_MATERIALIZATION/RUN_TEST"
+        )
+        entrypoint = control / ".venv/bin/program-driver"
+        program_id = "PROGRAM-MATERIALIZATION-TEST"
+        snapshot_hash = "1" * 64
+        source_bundle_hash = "2" * 64
+        operation_manifest_hash = "3" * 64
+        scope_hash = "4" * 64
+
+        def write_json(path: Path, value: dict) -> str:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(value, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+
+        candidate.mkdir()
+        write_json(
+            candidate / "PROGRAM_DRIVER_CONTRACT.json",
+            {
+                "driver_entrypoint_abs": str(entrypoint),
+                "program_id": program_id,
+            },
+        )
+        write_json(
+            candidate / "CHARTER_LOCK.json",
+            {
+                "charter_sha256": "5" * 64,
+                "profile_lock_sha256": "6" * 64,
+            },
+        )
+        entrypoint.parent.mkdir(parents=True)
+        entrypoint.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        entrypoint.chmod(0o755)
+
+        payload_hashes: dict[str, str] = {}
+        for relative_name in (
+            "pyproject.toml",
+            "src/dag_execution_control/cli.py",
+            "src/dag_execution_control/driver.py",
+            "tools/program_driver_materialization_runner.py",
+        ):
+            payload_path = control / relative_name
+            payload_path.parent.mkdir(parents=True, exist_ok=True)
+            payload_path.write_text(f"payload:{relative_name}\n", encoding="utf-8")
+            payload_hashes[relative_name] = hashlib.sha256(
+                payload_path.read_bytes()
+            ).hexdigest()
+
+        receipt_path = evidence / "MATERIALIZATION_RECEIPT.json"
+        receipt = {
+            "authorization_id": "AUTH-MATERIALIZATION-TEST",
+            "candidate_write_performed": False,
+            "dag_transition_performed": False,
+            "driver_entrypoint_abs": str(entrypoint),
+            "driver_entrypoint_sha256": hashlib.sha256(
+                entrypoint.read_bytes()
+            ).hexdigest(),
+            "driver_invoked": False,
+            "driver_runtime_verified": False,
+            "operation_manifest_sha256": operation_manifest_hash,
+            "program_id": program_id,
+            "real_target_install_performed": False,
+            "runtime_control_root": str(control),
+            "runtime_payload_file_count": len(payload_hashes),
+            "runtime_payload_hashes": payload_hashes,
+            "scope_sha256": scope_hash,
+            "source_bundle_sha256": source_bundle_hash,
+            "status": "MATERIALIZED_NOT_RUNTIME_VERIFIED",
+            "target_code_modified": False,
+            "workpack_executed": False,
+        }
+        receipt_hash = write_json(receipt_path, receipt)
+        consumption_path = evidence / "AUTHORIZATION_CONSUMPTION.json"
+        consumption = {
+            "authorization_id": "AUTH-MATERIALIZATION-TEST",
+            "consumed_by_action_id": "PROGRAM_DRIVER_MATERIALIZATION_PRECONDITION_V2",
+            "consumption_status": "CONSUMED_VALID_MATERIALIZATION",
+            "dag_transition_performed": False,
+            "driver_invoked": False,
+            "driver_runtime_verified": False,
+            "materialization_receipt_ref": str(receipt_path),
+            "materialization_receipt_sha256": receipt_hash,
+            "materializations_authorized": 1,
+            "materializations_consumed": 1,
+            "materializations_remaining": 0,
+            "max_transitions": 0,
+            "program_id": program_id,
+            "replay_forbidden": True,
+            "scope_sha256": scope_hash,
+            "successor_execution_authorized": False,
+        }
+        consumption_hash = write_json(consumption_path, consumption)
+        authorization_path = (
+            control
+            / "authorizations/PROGRAM_DRIVER_MATERIALIZATION_AUTHORIZATION.json"
+        )
+        authorization = {
+            "authorization_class": "PROJECT_BOOTSTRAP_AUTHORIZATION",
+            "authorization_id": "AUTH-MATERIALIZATION-TEST",
+            "charter_hash": "5" * 64,
+            "consumption_ref": str(consumption_path),
+            "consumption_sha256": consumption_hash,
+            "consumption_status": "CONSUMED_VALID_MATERIALIZATION",
+            "delegation_allowed": False,
+            "materialization_receipt_ref": str(receipt_path),
+            "materialization_receipt_sha256": receipt_hash,
+            "materializations_consumed": 1,
+            "materializations_remaining": 0,
+            "max_materializations": 1,
+            "max_transitions": 0,
+            "may_auto_advance": False,
+            "may_materialize_program_driver": True,
+            "may_modify_target_code": False,
+            "may_promote_validated_results": False,
+            "may_start_program_driver": False,
+            "operation_manifest_sha256": operation_manifest_hash,
+            "profile_lock_hash": "6" * 64,
+            "program_id": program_id,
+            "real_target_install_allowed": False,
+            "scope": {
+                "action_ids": ["PROGRAM_DRIVER_MATERIALIZATION_PRECONDITION_V2"],
+                "allowed_write_roots": [
+                    str(control),
+                    str(evidence.parent),
+                ],
+                "dag_node_ids": [],
+                "execution_modes": ["PROGRAM_CONTROL_BOOTSTRAP"],
+            },
+            "scope_expansion_allowed": False,
+            "scope_sha256": scope_hash,
+            "source_bundle_sha256": source_bundle_hash,
+            "source_snapshot_hash": snapshot_hash,
+            "status": "CONSUMED",
+        }
+        write_json(authorization_path, authorization)
+        write_json(
+            control / "state/CONTROL_STATE.json",
+            {
+                "approved_candidate_snapshot_hash": snapshot_hash,
+                "control_status": "PROGRAM_DRIVER_MATERIALIZED_PROJECT_VALIDATION_AUTHORIZATION_REQUIRED",
+                "driver_materialized": True,
+                "driver_runtime_verified": False,
+                "driver_started": False,
+                "next_eligible_node": "PROGRAM_DRIVER_RUNTIME_VERIFIED",
+                "program_execution_started": False,
+                "program_id": program_id,
+                "side_effects_allowed": False,
+            },
+        )
+        command = {
+            "authorization_ref": None,
+            "auto_execute": False,
+            "command_kind": "PLANNED_EXECUTOR_INTERFACE",
+            "executable_status": "PLANNED_NOT_INSTALLED",
+            "executor_role": "BUILD_PROGRAM_DRIVER",
+        }
+
+        self.assertTrue(
+            _authorized_driver_materialization_precondition(
+                candidate, execution, entrypoint, command
+            )
+        )
+
+        receipt["driver_invoked"] = True
+        receipt_hash = write_json(receipt_path, receipt)
+        consumption["materialization_receipt_sha256"] = receipt_hash
+        consumption_hash = write_json(consumption_path, consumption)
+        authorization["materialization_receipt_sha256"] = receipt_hash
+        authorization["consumption_sha256"] = consumption_hash
+        write_json(authorization_path, authorization)
+
+        self.assertFalse(
+            _authorized_driver_materialization_precondition(
+                candidate, execution, entrypoint, command
+            )
+        )
+
+    def test_authorized_materialized_codex_executor_preserves_candidate_validity(
+        self,
+    ) -> None:
+        candidate = self.root / "executor-approved-candidate"
+        build_root = self.root / "executor-approved-build-program"
+        execution = build_root / "execution"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"].update(
+            {"output_root": str(candidate), "execution_root": str(execution)}
+        )
+        ir["target"]["start_package_immutability_policy"] = {
+            "candidate_root_read_only_after_atomic_publication": True,
+            "candidate_execution_roots_must_not_overlap": True,
+        }
+        compile_candidate(
+            ir,
+            SPEC_ROOT,
+            self.root / "executor-approved-staging",
+            candidate,
+            CREATED_AT,
+        )
+
+        control = execution / "control_plane"
+        launcher = execution / "planned_executors/bin/codex"
+        source_binary = build_root / "codex-source"
+        launcher.parent.mkdir(parents=True)
+        control.mkdir(parents=True)
+        launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        source_binary.write_text("verified source binary\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        source_binary.chmod(0o755)
+        launcher_hash = hashlib.sha256(launcher.read_bytes()).hexdigest()
+        source_hash = hashlib.sha256(source_binary.read_bytes()).hexdigest()
+
+        authorization_path = control / "EXECUTOR_PREPARATION_AUTHORIZATION.json"
+        authorization = {
+            "authorization_class": "REPAIR_EXECUTION_AUTHORIZATION",
+            "forbidden_actions": [
+                "CODEX_CODING_AGENT_INVOCATION",
+                "PROGRAM_DRIVER_START",
+                "PROJECT_BOOTSTRAP",
+                "WORKPACK_EXECUTION",
+            ],
+            "max_transitions": 2,
+            "may_auto_advance": False,
+            "scope": {"workpack_ids": []},
+            "status": "GRANTED",
+        }
+        authorization_path.write_text(
+            json.dumps(authorization, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+        descriptor_path = control / "CODEX_EXECUTOR_DESCRIPTOR.json"
+        descriptor = {
+            "agent_invoked": False,
+            "candidate_content_sha256": _candidate_tree_hash(candidate),
+            "execution_started": False,
+            "launcher_abs": str(launcher),
+            "launcher_sha256": launcher_hash,
+            "real_target_install_started": False,
+            "source_binary_abs": str(source_binary),
+            "source_binary_sha256": source_hash,
+            "status": "PREPARED_VERIFIED_NOT_INVOKED",
+            "workpack_execution_started": False,
+        }
+        descriptor_path.write_text(
+            json.dumps(descriptor, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+        receipt = {
+            "agent_invoked": False,
+            "authorization_ref": authorization_path.relative_to(
+                build_root
+            ).as_posix(),
+            "authorization_sha256": hashlib.sha256(
+                authorization_path.read_bytes()
+            ).hexdigest(),
+            "descriptor_ref": descriptor_path.relative_to(build_root).as_posix(),
+            "descriptor_sha256": hashlib.sha256(
+                descriptor_path.read_bytes()
+            ).hexdigest(),
+            "driver_started": False,
+            "execution_started": False,
+            "launcher_ref": launcher.relative_to(build_root).as_posix(),
+            "launcher_sha256": launcher_hash,
+            "real_target_install_started": False,
+            "status": "CODEX_EXECUTOR_PREPARED_VERIFIED_NOT_INVOKED",
+            "workpack_execution_started": False,
+        }
+        (control / "CODEX_EXECUTOR_PREPARATION_RECEIPT.json").write_text(
+            json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+        self.assertEqual(validate_candidate(candidate)["status"], "PASS")
+
+    def test_authorized_linkage_hash_drift_failure_preserves_candidate_validity(
+        self,
+    ) -> None:
+        candidate = self.root / "linkage-failure-candidate"
+        build_root = self.root / "linkage-failure-build"
+        execution = build_root / "execution"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"].update(
+            {"output_root": str(candidate), "execution_root": str(execution)}
+        )
+        compile_candidate(
+            ir,
+            SPEC_ROOT,
+            self.root / "linkage-failure-staging",
+            candidate,
+            CREATED_AT,
+        )
+
+        def write_json(path: Path, value: dict) -> str:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+
+        def json_hash(value: dict) -> str:
+            return hashlib.sha256(
+                json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+
+        control = execution / "control_plane"
+        launcher = execution / "planned_executors/bin/codex"
+        repository = execution / "project_start_packages/linkage_review/repository"
+        evidence = execution / "evidence/engineering_dag/LINKAGE_BOOTSTRAP"
+        launcher.parent.mkdir(parents=True)
+        repository.mkdir(parents=True)
+        evidence.mkdir(parents=True)
+        launcher.write_text("#!/bin/sh\nexit 126\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        launcher_hash = hashlib.sha256(launcher.read_bytes()).hexdigest()
+        candidate_hash = _candidate_tree_hash(candidate)
+
+        manifest_refs = []
+        for workpack in ("LINK-PROTOCOL", "LINK-CLI"):
+            manifest_path = (
+                execution
+                / f"planned_executors/manifests/{workpack}.resolved-command.json"
+            )
+            manifest_hash = write_json(
+                manifest_path,
+                {
+                    "auto_execute": False,
+                    "executable_sha256": launcher_hash,
+                    "status": "READY_NOT_EXECUTED",
+                    "workpack_id": workpack,
+                },
+            )
+            manifest_refs.append(
+                {
+                    "ref": manifest_path.relative_to(build_root).as_posix(),
+                    "sha256": manifest_hash,
+                }
+            )
+
+        scope = {
+            "dag_node_ids": ["LINKAGE_BOOTSTRAP"],
+            "project_ids": ["CONFORMANCE_LINKAGE_REVIEW"],
+            "workpack_ids": ["LINK-PROTOCOL", "LINK-CLI"],
+        }
+        authorization_path = control / "LINKAGE_BOOTSTRAP_EXECUTION_AUTHORIZATION.json"
+        authorization = {
+            "authorization_class": "PROJECT_BOOTSTRAP_AUTHORIZATION",
+            "authorization_id": "AUTH-LINKAGE-FAILURE-TEST",
+            "authorization_scope_sha256": json_hash(scope),
+            "candidate_content_sha256": candidate_hash,
+            "command_manifest_refs": manifest_refs,
+            "consumption_policy": {
+                "exact_workpack_order": ["LINK-PROTOCOL", "LINK-CLI"]
+            },
+            "forbidden_actions": [
+                "LINKAGE_SELF_CONFORMANCE",
+                "LINKAGE_TOOL_RELEASE",
+                "MAIN_PROJECT_BOOTSTRAP",
+                "LAB_CERTIFICATION",
+                "TARGET_RUNTIME_INSTALLATION",
+                "REAL_TARGET_INSTALL",
+                "INSTALL",
+            ],
+            "granted_transitions": 2,
+            "max_transitions": 2,
+            "may_auto_advance": False,
+            "real_target_install_allowed": False,
+            "scope": scope,
+            "status": "GRANTED",
+        }
+        authorization_hash = write_json(authorization_path, authorization)
+
+        runtime_path = control / "runtime/PROGRAM_DRIVER_RUNTIME_STATE.json"
+        runtime = {
+            "active_dag_node": "LINKAGE_BOOTSTRAP",
+            "active_pipeline_action_id": None,
+            "active_workpack_id": None,
+            "authorization_consumptions": {"AUTH-LINKAGE-FAILURE-TEST": 1},
+            "completed_pipeline_action_ids": ["LAB_TOOL_RELEASE_LOCKED"],
+            "completed_workpack_ids": [
+                "LAB-PROTOCOL",
+                "LAB-CLI",
+                "LAB-FIXTURES",
+                "LAB-SELFTEST",
+            ],
+            "driver_status": "BLOCKED_WORKPACK_VALIDATION_FAIL",
+            "open_blocker_codes": [
+                "WORKPACK_RESULT_OR_INDEPENDENT_VALIDATION_FAILED"
+            ],
+            "recovery": {"required": False},
+            "side_effects_allowed": False,
+            "state_revision": 16,
+        }
+        runtime["state_hash"] = json_hash(runtime)
+        runtime_hash = write_json(runtime_path, runtime)
+
+        stderr_path = evidence / "LINK-PROTOCOL.stderr"
+        stdout_path = evidence / "LINK-PROTOCOL.stdout"
+        stderr_path.write_text("Codex CLI target hash drift\n", encoding="utf-8")
+        stdout_path.write_text("", encoding="utf-8")
+        verification_path = evidence / "INDEPENDENT_FAILURE_VERIFICATION_RECEIPT.json"
+        verification_hash = write_json(
+            verification_path,
+            {
+                "link_cli_started": False,
+                "link_protocol_agent_result_created": False,
+                "link_protocol_code_written": False,
+                "status": "FAIL_CONFIRMED_BEFORE_MODEL_WORK_AND_CODE_WRITE",
+            },
+        )
+        failure_result_path = (
+            execution / "evidence/engineering_dag/LINKAGE_BOOTSTRAP.failure-result.json"
+        )
+        failure_result_hash = write_json(
+            failure_result_path,
+            {
+                "completed_workpack_ids": [],
+                "failed_workpack_id": "LINK-PROTOCOL",
+                "link_cli_started": False,
+                "link_protocol_code_written": False,
+                "residual_transition_budget_reusable": False,
+                "status": "FAIL_STOPPED_BEFORE_MODEL_WORK_AND_CODE_WRITE",
+            },
+        )
+        receipt_path = control / "LINKAGE_CODEX_TARGET_HASH_DRIFT_FAILURE_RECEIPT.json"
+        receipt = {
+            "authorization_ref": authorization_path.relative_to(build_root).as_posix(),
+            "authorization_sha256": authorization_hash,
+            "authorization_transitions_consumed": 1,
+            "authorization_transitions_granted": 2,
+            "candidate_content_sha256": candidate_hash,
+            "code_files_written": [],
+            "codex_launcher_sha256": launcher_hash,
+            "codex_target_current_sha256": "current-hash",
+            "codex_target_expected_sha256": "expected-hash",
+            "command_exit_code": 126,
+            "failed_workpack_id": "LINK-PROTOCOL",
+            "failure_result_ref": failure_result_path.relative_to(
+                build_root
+            ).as_posix(),
+            "failure_result_sha256": failure_result_hash,
+            "independent_failure_verification_ref": verification_path.relative_to(
+                build_root
+            ).as_posix(),
+            "independent_failure_verification_sha256": verification_hash,
+            "independent_validation_exit_code": 1,
+            "link_cli_started": False,
+            "link_protocol_agent_result_created": False,
+            "next_workpack_started": False,
+            "residual_transition_budget_invalidated_by_stop_on_failure": True,
+            "runtime_state_after_failure_ref": runtime_path.relative_to(
+                build_root
+            ).as_posix(),
+            "runtime_state_after_failure_sha256": runtime_hash,
+            "status": "FAILED_BEFORE_MODEL_WORK_AND_CODE_WRITE_STOPPED",
+            "stderr_sha256": hashlib.sha256(stderr_path.read_bytes()).hexdigest(),
+            "stdout_sha256": hashlib.sha256(stdout_path.read_bytes()).hexdigest(),
+        }
+        write_json(receipt_path, receipt)
+        write_json(
+            control / "CONTROL_PLANE_STATE.json",
+            {
+                "highest_completed_external_gate": "LAB_TOOL_RELEASE_LOCKED_PASS",
+                "install_started": False,
+                "open_blocker_codes": [
+                    "CODEX_CLI_TARGET_HASH_DRIFT",
+                    "LINKAGE_BOOTSTRAP_RETRY_REAUTHORIZATION_REQUIRED",
+                ],
+                "side_effects_allowed": False,
+                "state": "LINKAGE_BOOTSTRAP_BLOCKED_CODEX_TARGET_HASH_DRIFT_WAITING_REPAIR_RETRY_AUTHORIZATION",
+            },
+        )
+
+        command = {"executor_role": "CODEX_CODING_AGENT"}
+        self.assertTrue(
+            _authorized_linkage_bootstrap_failure_materialization(
+                candidate, execution, launcher, command
+            )
+        )
+        self.assertEqual(validate_candidate(candidate)["status"], "PASS")
+
+        receipt["link_cli_started"] = True
+        write_json(receipt_path, receipt)
+        self.assertFalse(
+            _authorized_linkage_bootstrap_failure_materialization(
+                candidate, execution, launcher, command
+            )
+        )
+
+    def test_authorized_linkage_hash_repaired_no_op_failure_is_receipt_bound(
+        self,
+    ) -> None:
+        candidate = self.root / "linkage-no-op-candidate"
+        build_root = self.root / "linkage-no-op-build"
+        execution = build_root / "execution"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"].update(
+            {"output_root": str(candidate), "execution_root": str(execution)}
+        )
+        compile_candidate(
+            ir,
+            SPEC_ROOT,
+            self.root / "linkage-no-op-staging",
+            candidate,
+            CREATED_AT,
+        )
+
+        def write_json(path: Path, value: dict) -> str:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            return hashlib.sha256(path.read_bytes()).hexdigest()
+
+        def json_hash(value: dict) -> str:
+            return hashlib.sha256(
+                json.dumps(
+                    value,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+
+        def ref(path: Path) -> str:
+            return path.relative_to(build_root).as_posix()
+
+        control = execution / "control_plane"
+        linkage_evidence = execution / "evidence/engineering_dag/LINKAGE_BOOTSTRAP"
+        repair_evidence = execution / "evidence/linkage-bootstrap-executor-repair"
+        repository = execution / "project_start_packages/linkage_review/repository"
+        launcher = execution / "planned_executors/bin/codex"
+        target = build_root / "codex-target"
+        repository.mkdir(parents=True)
+        launcher.parent.mkdir(parents=True)
+        linkage_evidence.mkdir(parents=True)
+        repair_evidence.mkdir(parents=True)
+        launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        target.write_text("codex target", encoding="utf-8")
+        launcher_hash = hashlib.sha256(launcher.read_bytes()).hexdigest()
+        target_hash = hashlib.sha256(target.read_bytes()).hexdigest()
+        candidate_hash = _candidate_tree_hash(candidate)
+
+        manifest_refs = []
+        for workpack in ("LINK-PROTOCOL", "LINK-CLI"):
+            manifest_path = (
+                execution
+                / f"planned_executors/manifests/{workpack}.resolved-command.json"
+            )
+            manifest_hash = write_json(
+                manifest_path,
+                {
+                    "auto_execute": False,
+                    "executable_sha256": launcher_hash,
+                    "status": "READY_NOT_EXECUTED",
+                    "workpack_id": workpack,
+                },
+            )
+            manifest_refs.append(
+                {"ref": ref(manifest_path), "sha256": manifest_hash}
+            )
+
+        repair_authorization_path = (
+            control / "LINKAGE_CODEX_TARGET_HASH_DRIFT_REPAIR_REVERIFY_AUTHORIZATION.json"
+        )
+        repair_authorization_hash = write_json(
+            repair_authorization_path,
+            {
+                "authorization_class": "REPAIR_REVERIFY_AUTHORIZATION",
+                "candidate_content_sha256": candidate_hash,
+                "driver_execution_authorized": False,
+                "max_driver_transitions": 0,
+                "status": "GRANTED",
+                "workpack_execution_authorized": False,
+            },
+        )
+        repair_attestation_path = repair_evidence / "REVERIFICATION_ATTESTATION.json"
+        repair_attestation_hash = write_json(
+            repair_attestation_path,
+            {
+                "authorization_sha256": repair_authorization_hash,
+                "blocking_findings": [],
+                "checks": [{"check_id": "TARGET", "status": "PASS"}],
+                "codex_launcher_sha256": launcher_hash,
+                "codex_target_abs": str(target),
+                "codex_target_sha256": target_hash,
+                "status": "PASS",
+            },
+        )
+        descriptor_path = (
+            control / "LINKAGE_CODEX_EXECUTOR_DESCRIPTOR_AFTER_TARGET_HASH_REPAIR.json"
+        )
+        descriptor_hash = write_json(
+            descriptor_path,
+            {
+                "authorization_sha256": repair_authorization_hash,
+                "launcher_sha256": launcher_hash,
+                "reverification_attestation_sha256": repair_attestation_hash,
+                "runtime_state_revision": 16,
+                "status": "REPAIRED_REVERIFIED_READY_FOR_NEW_LINKAGE_BOOTSTRAP_RETRY_AUTHORIZATION",
+                "target_sha256": target_hash,
+                "workpack_execution_started_after_repair": False,
+            },
+        )
+        repair_receipt_path = (
+            control / "LINKAGE_CODEX_TARGET_HASH_REPAIR_REVERIFICATION_RECEIPT.json"
+        )
+        repair_receipt_hash = write_json(
+            repair_receipt_path,
+            {
+                "authorization_sha256": repair_authorization_hash,
+                "authorization_transitions_consumed": 0,
+                "descriptor_sha256": descriptor_hash,
+                "reverification_attestation_sha256": repair_attestation_hash,
+                "status": "COMPLETE_READY_FOR_HASH_BOUND_2_TRANSITION_LINKAGE_BOOTSTRAP_RETRY_AUTHORIZATION",
+            },
+        )
+        scope = {"workpack_ids": ["LINK-PROTOCOL", "LINK-CLI"]}
+        retry_authorization_path = (
+            control / "LINKAGE_BOOTSTRAP_RETRY_AFTER_CODEX_TARGET_HASH_REPAIR_AUTHORIZATION.json"
+        )
+        retry_authorization = {
+            "authorization_class": "REPAIR_REVERIFY_AND_WORKPACK_RETRY_AUTHORIZATION",
+            "authorization_id": "AUTH-LINKAGE-NO-OP-TEST",
+            "authorization_scope_sha256": json_hash(scope),
+            "candidate_content_sha256": candidate_hash,
+            "command_manifest_refs": manifest_refs,
+            "consumption_policy": {
+                "exact_workpack_order": ["LINK-PROTOCOL", "LINK-CLI"],
+                "stop_on_first_failure": True,
+            },
+            "granted_transitions": 2,
+            "max_transitions": 2,
+            "repair_reverification_receipt_sha256": repair_receipt_hash,
+            "scope": scope,
+            "status": "GRANTED",
+        }
+        retry_authorization_hash = write_json(
+            retry_authorization_path, retry_authorization
+        )
+
+        runtime_path = control / "runtime/PROGRAM_DRIVER_RUNTIME_STATE.json"
+        runtime = {
+            "active_dag_node": "LINKAGE_BOOTSTRAP",
+            "active_workpack_id": None,
+            "authorization_consumptions": {"AUTH-LINKAGE-NO-OP-TEST": 1},
+            "driver_status": "BLOCKED_WORKPACK_VALIDATION_FAIL",
+            "side_effects_allowed": False,
+            "state_revision": 18,
+        }
+        runtime["state_hash"] = json_hash(runtime)
+        runtime_hash = write_json(runtime_path, runtime)
+        ledger_path = control / "runtime/PHASE_TRANSITION_LEDGER.jsonl"
+        ledger_path.write_text("{}\n", encoding="utf-8")
+        ledger_hash = hashlib.sha256(ledger_path.read_bytes()).hexdigest()
+
+        (linkage_evidence / "LINK-PROTOCOL.stderr").write_text(
+            "Codex CLI target hash drift\n", encoding="utf-8"
+        )
+        (linkage_evidence / "LINK-PROTOCOL.stdout").write_text("", encoding="utf-8")
+        write_json(
+            linkage_evidence / "INDEPENDENT_FAILURE_VERIFICATION_RECEIPT.json",
+            {"status": "FAIL_CONFIRMED_BEFORE_MODEL_WORK_AND_CODE_WRITE"},
+        )
+        agent_result_path = (
+            linkage_evidence / "LINK-PROTOCOL.hash-repair-retry-001.agent-result.json"
+        )
+        agent_result_hash = write_json(
+            agent_result_path,
+            {
+                "acceptance_checks": [{"check_id": "LINK-PROTOCOL", "status": "FAIL"}],
+                "changed_files": [],
+                "status": "PASS",
+            },
+        )
+        stderr_path = linkage_evidence / "LINK-PROTOCOL.hash-repair-retry-001.stderr"
+        stdout_path = linkage_evidence / "LINK-PROTOCOL.hash-repair-retry-001.stdout"
+        stderr_path.write_text("", encoding="utf-8")
+        stdout_path.write_text("agent completed\n", encoding="utf-8")
+        blockers = [
+            "LINKAGE_EXECUTOR_AUTHORIZATION_CONTEXT_NOT_PROPAGATED",
+            "WORKPACK_RESULT_ACCEPTANCE_COHERENCE_REPAIR_REQUIRED",
+            "LINKAGE_BOOTSTRAP_RETRY_REAUTHORIZATION_REQUIRED",
+        ]
+        failure_verification_path = (
+            linkage_evidence
+            / "INDEPENDENT_HASH_REPAIR_RETRY_FAILURE_VERIFICATION_RECEIPT.json"
+        )
+        failure_verification_hash = write_json(
+            failure_verification_path,
+            {
+                "blocking_findings": blockers[:2],
+                "link_cli_started": False,
+                "link_protocol_code_written": False,
+                "repository_file_count": 0,
+                "status": "FAIL_CONFIRMED_NO_CODE_AFTER_HASH_REPAIR",
+            },
+        )
+        failure_result_path = (
+            execution / "evidence/engineering_dag/LINKAGE_BOOTSTRAP.hash-repair-retry-failure-result.json"
+        )
+        failure_result_hash = write_json(
+            failure_result_path,
+            {
+                "blocking_findings": blockers,
+                "completed_workpack_ids": [],
+                "link_cli_started": False,
+                "link_protocol_code_written": False,
+                "residual_transition_budget_reusable": False,
+                "status": "FAIL_STOPPED_NO_CODE_AFTER_HASH_REPAIR",
+            },
+        )
+        failure_receipt_path = control / "LINKAGE_EXECUTOR_CONTEXT_NO_OP_FAILURE_RECEIPT.json"
+        failure_receipt = {
+            "agent_result_ref": ref(agent_result_path),
+            "agent_result_sha256": agent_result_hash,
+            "authorization_ref": ref(retry_authorization_path),
+            "authorization_sha256": retry_authorization_hash,
+            "authorization_transitions_consumed": 1,
+            "authorization_transitions_granted": 2,
+            "candidate_content_sha256": candidate_hash,
+            "code_files_written": [],
+            "codex_command_exit_code": 0,
+            "failed_workpack_id": "LINK-PROTOCOL",
+            "failure_result_ref": ref(failure_result_path),
+            "failure_result_sha256": failure_result_hash,
+            "independent_failure_verification_ref": ref(failure_verification_path),
+            "independent_failure_verification_sha256": failure_verification_hash,
+            "independent_validation_exit_code": 1,
+            "link_cli_started": False,
+            "next_workpack_started": False,
+            "repository_file_count": 0,
+            "residual_transition_budget_invalidated_by_stop_on_failure": True,
+            "runtime_state_after_failure_ref": ref(runtime_path),
+            "runtime_state_after_failure_sha256": runtime_hash,
+            "status": "FAILED_NO_CODE_AFTER_HASH_REPAIR_STOPPED",
+            "stderr_ref": ref(stderr_path),
+            "stderr_sha256": hashlib.sha256(stderr_path.read_bytes()).hexdigest(),
+            "stdout_ref": ref(stdout_path),
+            "stdout_sha256": hashlib.sha256(stdout_path.read_bytes()).hexdigest(),
+            "transition_ledger_ref": ref(ledger_path),
+            "transition_ledger_sha256": ledger_hash,
+        }
+        failure_receipt_hash = write_json(failure_receipt_path, failure_receipt)
+        next_draft_path = (
+            control
+            / "LINKAGE_EXECUTOR_CONTEXT_RESULT_COHERENCE_AND_EVIDENCE_ISOLATION_"
+            "REPAIR_REVERIFY_AND_BOOTSTRAP_RETRY_AUTHORIZATION_DRAFT.json"
+        )
+        next_draft = {
+            "execution_authorized": False,
+            "failure_receipt_sha256": failure_receipt_hash,
+            "grantable": False,
+            "max_transitions": 0,
+            "status": "DRAFT_BLOCKED_NOT_GRANTED",
+        }
+        write_json(next_draft_path, next_draft)
+        write_json(
+            control / "CONTROL_PLANE_STATE.json",
+            {
+                "highest_completed_external_gate": "LAB_TOOL_RELEASE_LOCKED_PASS",
+                "install_started": False,
+                "open_blocker_codes": blockers,
+                "side_effects_allowed": False,
+                "state": "LINKAGE_BOOTSTRAP_BLOCKED_EXECUTOR_CONTEXT_NO_OP_WAITING_REPAIR_RETRY_AUTHORIZATION",
+            },
+        )
+
+        command = {"executor_role": "CODEX_CODING_AGENT"}
+        self.assertTrue(
+            _authorized_linkage_executor_no_op_failure_materialization(
+                candidate, execution, launcher, command
+            )
+        )
+        self.assertEqual(validate_candidate(candidate)["status"], "PASS")
+
+        next_draft["status"] = "GRANTED"
+        write_json(next_draft_path, next_draft)
+        self.assertFalse(
+            _authorized_linkage_executor_no_op_failure_materialization(
+                candidate, execution, launcher, command
+            )
+        )
+
+    def test_receipt_bound_lab_bootstrap_and_self_conformance_are_accepted(self) -> None:
+        candidate = self.root / "bootstrap-candidate"
+        build_root = self.root / "bootstrap-build"
+        execution = build_root / "execution"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"].update(
+            {"output_root": str(candidate), "execution_root": str(execution)}
+        )
+        compile_candidate(
+            ir,
+            SPEC_ROOT,
+            self.root / "bootstrap-staging",
+            candidate,
+            CREATED_AT,
+        )
+        expected_workpacks = ["LAB-PROTOCOL", "LAB-CLI", "LAB-FIXTURES"]
+        launcher = execution / "planned_executors/bin/codex"
+        repository = execution / "project_start_packages/external_lab/repository"
+        control = execution / "control_plane"
+        evidence = execution / "evidence/engineering_dag"
+        launcher.parent.mkdir(parents=True)
+        repository.mkdir(parents=True)
+        control.mkdir(parents=True)
+        evidence.mkdir(parents=True)
+        launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        (repository / "lab.py").write_text("READY = True\n", encoding="utf-8")
+
+        authorization_path = control / "retry-authorization.json"
+        authorization = {
+            "authorization_class": "REPAIR_REVERIFY_AND_WORKPACK_RETRY_AUTHORIZATION",
+            "forbidden_actions": [
+                "LAB_SELFTEST",
+                "LAB_CERTIFICATION",
+                "LINKAGE_PROJECT_BOOTSTRAP",
+                "MAIN_PROJECT_BOOTSTRAP",
+                "TARGET_RUNTIME_INSTALLATION",
+                "REAL_TARGET_INSTALL",
+            ],
+            "max_transitions": 3,
+            "scope": {"workpack_ids": expected_workpacks},
+            "status": "GRANTED",
+        }
+        authorization_path.write_text(
+            json.dumps(authorization, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        runtime_path = control / "runtime-state.json"
+        runtime = {
+            "active_workpack_id": None,
+            "completed_workpack_ids": expected_workpacks,
+            "driver_status": "STOPPED_AFTER_AUTHORIZED_SCOPE_CONSUMED",
+            "side_effects_allowed": False,
+        }
+        runtime_path.write_text(
+            json.dumps(runtime, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        result_path = evidence / "LAB_BOOTSTRAP.result.json"
+        result_path.write_text(
+            json.dumps(
+                {"status": "PASS", "success_gate": "LAB_BOOTSTRAP_PASS"},
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        repository_hash = hashlib.sha256()
+        repository_hash.update(b"lab.py\0")
+        repository_hash.update(
+            hashlib.sha256((repository / "lab.py").read_bytes()).hexdigest().encode()
+        )
+        repository_hash.update(b"\n")
+        receipt_path = control / "LAB_BOOTSTRAP_COMPLETION_RECEIPT.json"
+        receipt = {
+            "authorization_ref": authorization_path.relative_to(build_root).as_posix(),
+            "authorization_sha256": hashlib.sha256(
+                authorization_path.read_bytes()
+            ).hexdigest(),
+            "authorization_transitions_consumed": 3,
+            "candidate_content_sha256": _candidate_tree_hash(candidate),
+            "completed_workpack_ids": expected_workpacks,
+            "install_started": False,
+            "lab_bootstrap_result_ref": result_path.relative_to(
+                build_root
+            ).as_posix(),
+            "lab_bootstrap_result_sha256": hashlib.sha256(
+                result_path.read_bytes()
+            ).hexdigest(),
+            "lab_certification_started": False,
+            "lab_selftest_started": False,
+            "linkage_project_started": False,
+            "main_project_started": False,
+            "repository_content_file_count": 1,
+            "repository_content_sha256": repository_hash.hexdigest(),
+            "runtime_state_ref": runtime_path.relative_to(build_root).as_posix(),
+            "runtime_state_sha256": hashlib.sha256(
+                runtime_path.read_bytes()
+            ).hexdigest(),
+            "status": "LAB_BOOTSTRAP_COMPLETE_STOPPED_BEFORE_SELFTEST",
+        }
+        receipt_path.write_text(
+            json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        descriptor_path = (
+            control / "CODEX_EXECUTOR_DESCRIPTOR_AFTER_LAB_BOOTSTRAP.json"
+        )
+        descriptor = {
+            "candidate_content_sha256": _candidate_tree_hash(candidate),
+            "completed_workpack_ids": expected_workpacks,
+            "completion_receipt_ref": receipt_path.relative_to(
+                build_root
+            ).as_posix(),
+            "completion_receipt_sha256": hashlib.sha256(
+                receipt_path.read_bytes()
+            ).hexdigest(),
+            "lab_certification_started": False,
+            "lab_selftest_started": False,
+            "launcher_sha256": hashlib.sha256(launcher.read_bytes()).hexdigest(),
+            "linkage_project_started": False,
+            "main_project_started": False,
+            "real_target_install_started": False,
+            "status": "ORDERED_LAB_BOOTSTRAP_SCOPE_CONSUMED_STOPPED",
+        }
+        descriptor_path.write_text(
+            json.dumps(descriptor, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+        self.assertTrue(
+            _authorized_lab_bootstrap_materialization(
+                candidate,
+                execution,
+                launcher,
+                {"executor_role": "CODEX_CODING_AGENT"},
+            )
+        )
+
+        self_authorization_path = control / "self-authorization.json"
+        self_authorization = {
+            "authorization_class": "PROJECT_VALIDATION_AUTHORIZATION",
+            "authorization_id": "AUTH-LAB-SELFTEST",
+            "forbidden_actions": [
+                "LAB_CERTIFICATION",
+                "LINKAGE_PROJECT_BOOTSTRAP",
+                "MAIN_PROJECT_BOOTSTRAP",
+                "TARGET_RUNTIME_INSTALLATION",
+                "REAL_TARGET_INSTALL",
+            ],
+            "max_transitions": 1,
+            "may_auto_advance": False,
+            "real_target_install_allowed": False,
+            "scope": {
+                "dag_node_ids": ["LAB_SELF_CONFORMANCE_PASS"],
+                "workpack_ids": ["LAB-SELFTEST"],
+            },
+            "status": "GRANTED",
+        }
+        self_authorization_path.write_text(
+            json.dumps(self_authorization, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        runtime.update(
+            {
+                "authorization_consumptions": {"AUTH-LAB-SELFTEST": 1},
+                "completed_workpack_ids": expected_workpacks + ["LAB-SELFTEST"],
+            }
+        )
+        runtime_path.write_text(
+            json.dumps(runtime, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        self_result_path = evidence / "LAB_SELF_CONFORMANCE_PASS.result.json"
+        self_result_path.write_text(
+            json.dumps(
+                {
+                    "status": "PASS",
+                    "success_gate": "LAB_SELF_CONFORMANCE_PASS_PASS",
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self_workpack_path = (
+            execution
+            / "evidence/project_workpacks/EXTERNAL_CONFORMANCE_LAB/LAB-SELFTEST/WORKPACK_RESULT.json"
+        )
+        self_workpack_path.parent.mkdir(parents=True)
+        self_workpack_path.write_text(
+            json.dumps(
+                {
+                    "command_exit_code": 0,
+                    "independent_validation_exit_code": 0,
+                    "status": "PASS",
+                    "workpack_id": "LAB-SELFTEST",
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        independent_path = self_workpack_path.parent / "INDEPENDENT_VALIDATION_RECEIPT.json"
+        independent_path.write_text(
+            json.dumps(
+                {"independent_validation_exit_code": 0, "status": "PASS"},
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self_receipt_path = control / "LAB_SELF_CONFORMANCE_COMPLETION_RECEIPT.json"
+        self_receipt = {
+            "authorization_ref": self_authorization_path.relative_to(build_root).as_posix(),
+            "authorization_sha256": hashlib.sha256(
+                self_authorization_path.read_bytes()
+            ).hexdigest(),
+            "authorization_transitions_consumed": 1,
+            "candidate_content_sha256": _candidate_tree_hash(candidate),
+            "completed_workpack_ids": expected_workpacks + ["LAB-SELFTEST"],
+            "independent_validation_receipt_ref": independent_path.relative_to(
+                build_root
+            ).as_posix(),
+            "independent_validation_receipt_sha256": hashlib.sha256(
+                independent_path.read_bytes()
+            ).hexdigest(),
+            "install_started": False,
+            "lab_certification_started": False,
+            "lab_self_conformance_result_ref": self_result_path.relative_to(
+                build_root
+            ).as_posix(),
+            "lab_self_conformance_result_sha256": hashlib.sha256(
+                self_result_path.read_bytes()
+            ).hexdigest(),
+            "lab_tool_release_started": False,
+            "linkage_project_started": False,
+            "main_project_started": False,
+            "repository_content_file_count": 1,
+            "repository_content_sha256": repository_hash.hexdigest(),
+            "runtime_state_ref": runtime_path.relative_to(build_root).as_posix(),
+            "runtime_state_sha256": hashlib.sha256(runtime_path.read_bytes()).hexdigest(),
+            "status": "LAB_SELF_CONFORMANCE_COMPLETE_STOPPED_BEFORE_TOOL_RELEASE",
+            "target_runtime_install_started": False,
+            "workpack_result_ref": self_workpack_path.relative_to(build_root).as_posix(),
+            "workpack_result_sha256": hashlib.sha256(
+                self_workpack_path.read_bytes()
+            ).hexdigest(),
+        }
+        self_receipt_path.write_text(
+            json.dumps(self_receipt, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        self_descriptor_path = (
+            control / "CODEX_EXECUTOR_DESCRIPTOR_AFTER_LAB_SELF_CONFORMANCE.json"
+        )
+        self_descriptor = {
+            "agent_invocation_count": 4,
+            "candidate_content_sha256": _candidate_tree_hash(candidate),
+            "completed_workpack_ids": expected_workpacks + ["LAB-SELFTEST"],
+            "lab_certification_started": False,
+            "lab_self_conformance_completion_receipt_ref": self_receipt_path.relative_to(
+                build_root
+            ).as_posix(),
+            "lab_self_conformance_completion_receipt_sha256": hashlib.sha256(
+                self_receipt_path.read_bytes()
+            ).hexdigest(),
+            "lab_selftest_executor_kind": "PINNED_LOCAL_PYTHON_NO_CODEX_AGENT",
+            "lab_tool_release_started": False,
+            "launcher_sha256": hashlib.sha256(launcher.read_bytes()).hexdigest(),
+            "linkage_project_started": False,
+            "main_project_started": False,
+            "real_target_install_started": False,
+            "status": "LAB_SELF_CONFORMANCE_COMPLETE_CODEX_STOPPED",
+        }
+        self_descriptor_path.write_text(
+            json.dumps(self_descriptor, sort_keys=True) + "\n", encoding="utf-8"
+        )
+
+        self.assertTrue(
+            _authorized_lab_self_conformance_materialization(
+                candidate,
+                execution,
+                launcher,
+                {"executor_role": "CODEX_CODING_AGENT"},
+            )
+        )
+
+        driver_source = control / "program_driver.py"
+        driver_entrypoint = control / "program-driver"
+        driver_source.write_text("VERSION = '0.3.0'\n", encoding="utf-8")
+        driver_entrypoint.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        repair_authorization_path = control / "pipeline-repair-authorization.json"
+        repair_authorization = {
+            "authorization_class": "REPAIR_EXECUTION_AUTHORIZATION",
+            "driver_execution_authorized": False,
+            "forbidden_actions": [
+                "LAB_TOOL_RELEASE_EXECUTION",
+                "PIPELINE_ACTION_EXECUTION",
+                "LAB_CERTIFICATION",
+                "LINKAGE_PROJECT_BOOTSTRAP",
+                "MAIN_PROJECT_BOOTSTRAP",
+                "TARGET_RUNTIME_INSTALLATION",
+                "REAL_TARGET_INSTALL",
+            ],
+            "granted_preparation_transitions": 2,
+            "max_driver_transitions": 0,
+            "may_auto_advance": False,
+            "scope": {"workpack_ids": []},
+            "status": "GRANTED",
+        }
+        repair_authorization_path.write_text(
+            json.dumps(repair_authorization, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        manifest_path = control / "release-action.json"
+        manifest = {
+            "distribution_build_started": False,
+            "execution_started": False,
+            "execution_unit_kind": "PIPELINE_ACTION",
+            "install_performed": False,
+            "pipeline_action_id": "LAB_TOOL_RELEASE_LOCKED",
+            "status": "READY_NOT_EXECUTED",
+            "workpack_id": None,
+        }
+        manifest_path.write_text(
+            json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        draft_path = control / "release-authorization-draft.json"
+        draft = {
+            "command_manifest_refs": [
+                {
+                    "ref": manifest_path.relative_to(build_root).as_posix(),
+                    "sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                }
+            ],
+            "driver_execution_authorized": False,
+            "execution_authorized": False,
+            "grantable": False,
+            "granted_transitions": 0,
+            "max_transitions": 0,
+            "scope": {
+                "pipeline_action_ids": ["LAB_TOOL_RELEASE_LOCKED"],
+                "workpack_ids": [],
+            },
+            "status": "DRAFT_READY_NOT_GRANTED",
+        }
+        draft_path.write_text(
+            json.dumps(draft, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        readiness_path = control / "release-readiness.json"
+        readiness = {
+            "execution_or_build_started": False,
+            "preparation_blocking_findings": [],
+            "release_action_writes_performed": False,
+            "status": "READY_FOR_PACKAGE_BUILD_AUTHORIZATION_NOT_GRANTED",
+            "target_pipeline_action_executed": False,
+            "technical_preparation_status": "PASS",
+        }
+        readiness_path.write_text(
+            json.dumps(readiness, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        attestation_path = control / "pipeline-repair-attestation.json"
+        attestation = {
+            "actual_pipeline_action_executed": False,
+            "status": "PASS_REVERIFIED_PIPELINE_ACTION_PREFLIGHT",
+            "target_distribution_build_started": False,
+        }
+        attestation_path.write_text(
+            json.dumps(attestation, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        ledger_path = control / "pipeline-repair-ledger.jsonl"
+        ledger_path.write_text("{}\n", encoding="utf-8")
+        runtime.update(
+            {
+                "active_pipeline_action_id": None,
+                "completed_pipeline_action_ids": [],
+                "driver_status": "STOPPED_AFTER_AUTHORIZED_REPAIR_PREPARATION",
+                "runtime_verification_status": "PASS_REVERIFIED_PIPELINE_ACTION_PREFLIGHT",
+            }
+        )
+        runtime["state_hash"] = hashlib.sha256(
+            json.dumps(
+                runtime,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        runtime_path.write_text(
+            json.dumps(runtime, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        preparation_receipt_path = (
+            control
+            / "DRIVER_PIPELINE_ACTION_REPAIR_AND_LAB_TOOL_RELEASE_PREPARATION_RECEIPT.json"
+        )
+        preparation_receipt = {
+            "actual_pipeline_action_executed": False,
+            "authorization_ref": repair_authorization_path.relative_to(
+                build_root
+            ).as_posix(),
+            "authorization_sha256": hashlib.sha256(
+                repair_authorization_path.read_bytes()
+            ).hexdigest(),
+            "authorization_transitions_consumed": 2,
+            "candidate_content_sha256": _candidate_tree_hash(candidate),
+            "distribution_build_started": False,
+            "install_started": False,
+            "lab_certification_started": False,
+            "linkage_project_started": False,
+            "main_project_started": False,
+            "package_build_authorization_draft_ref": draft_path.relative_to(
+                build_root
+            ).as_posix(),
+            "package_build_authorization_draft_sha256": hashlib.sha256(
+                draft_path.read_bytes()
+            ).hexdigest(),
+            "pipeline_action_manifest_ref": manifest_path.relative_to(
+                build_root
+            ).as_posix(),
+            "pipeline_action_manifest_sha256": hashlib.sha256(
+                manifest_path.read_bytes()
+            ).hexdigest(),
+            "readiness_report_ref": readiness_path.relative_to(
+                build_root
+            ).as_posix(),
+            "readiness_report_sha256": hashlib.sha256(
+                readiness_path.read_bytes()
+            ).hexdigest(),
+            "runtime_attestation_ref": attestation_path.relative_to(
+                build_root
+            ).as_posix(),
+            "runtime_attestation_sha256": hashlib.sha256(
+                attestation_path.read_bytes()
+            ).hexdigest(),
+            "runtime_state_ref": runtime_path.relative_to(build_root).as_posix(),
+            "runtime_state_sha256": hashlib.sha256(runtime_path.read_bytes()).hexdigest(),
+            "status": "COMPLETE_READY_FOR_EXPLICIT_PACKAGE_BUILD_AUTHORIZATION",
+            "target_runtime_install_started": False,
+            "transition_ledger_ref": ledger_path.relative_to(build_root).as_posix(),
+            "transition_ledger_sha256": hashlib.sha256(ledger_path.read_bytes()).hexdigest(),
+        }
+        preparation_receipt_path.write_text(
+            json.dumps(preparation_receipt, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        repaired_descriptor_path = (
+            control / "PROGRAM_DRIVER_DESCRIPTOR_AFTER_PIPELINE_ACTION_REPAIR.json"
+        )
+        repaired_descriptor = {
+            "candidate_content_sha256": _candidate_tree_hash(candidate),
+            "completed_pipeline_action_ids": [],
+            "completed_workpack_ids": expected_workpacks + ["LAB-SELFTEST"],
+            "driver_entrypoint_ref": driver_entrypoint.relative_to(
+                build_root
+            ).as_posix(),
+            "driver_entrypoint_sha256": hashlib.sha256(
+                driver_entrypoint.read_bytes()
+            ).hexdigest(),
+            "driver_source_ref": driver_source.relative_to(build_root).as_posix(),
+            "driver_source_sha256": hashlib.sha256(
+                driver_source.read_bytes()
+            ).hexdigest(),
+            "driver_version": "0.3.0",
+            "lab_certification_started": False,
+            "lab_tool_release_started": False,
+            "linkage_project_started": False,
+            "main_project_started": False,
+            "preparation_receipt_sha256": hashlib.sha256(
+                preparation_receipt_path.read_bytes()
+            ).hexdigest(),
+            "prior_descriptor_ref": self_descriptor_path.relative_to(
+                build_root
+            ).as_posix(),
+            "prior_descriptor_sha256": hashlib.sha256(
+                self_descriptor_path.read_bytes()
+            ).hexdigest(),
+            "real_target_install_started": False,
+            "runtime_state_sha256": hashlib.sha256(runtime_path.read_bytes()).hexdigest(),
+            "status": "PIPELINE_ACTION_SUPPORTED_RELEASE_PREPARED_NOT_AUTHORIZED",
+        }
+        repaired_descriptor_path.write_text(
+            json.dumps(repaired_descriptor, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        self.assertTrue(
+            _authorized_lab_tool_release_preparation_materialization(
+                candidate,
+                execution,
+                launcher,
+                {"executor_role": "CODEX_CODING_AGENT"},
+            )
+        )
+
+        def write_json(path: Path, payload: dict[str, object]) -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8"
+            )
+
+        release_dir = evidence / "LAB_TOOL_RELEASE_LOCKED"
+        archive_path = release_dir / "vscdsl_external_lab-0.1.0.zip"
+        archive_path.parent.mkdir(parents=True)
+        archive_path.write_bytes(b"deterministic-archive")
+        archive_hash = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+
+        distribution_path = release_dir / "LAB_TOOL_DISTRIBUTION_DESCRIPTOR.json"
+        write_json(
+            distribution_path,
+            {
+                "archive_sha256": archive_hash,
+                "install_performed": False,
+                "pipeline_action_id": "LAB_TOOL_RELEASE_LOCKED",
+            },
+        )
+        interface_path = release_dir / "CONFORMANCE_INTERFACE.realized.json"
+        write_json(
+            interface_path,
+            {
+                "interface_status": "LAB_TOOL_DISTRIBUTION_HASH_BOUND",
+                "lab_tool_distribution_sha256": archive_hash,
+            },
+        )
+        action_result_path = release_dir / "LAB_TOOL_RELEASE_LOCKED.action-result.json"
+        write_json(
+            action_result_path,
+            {
+                "conformance_interface_sha256": hashlib.sha256(
+                    interface_path.read_bytes()
+                ).hexdigest(),
+                "distribution_sha256": archive_hash,
+                "pipeline_action_id": "LAB_TOOL_RELEASE_LOCKED",
+                "release_descriptor_sha256": hashlib.sha256(
+                    distribution_path.read_bytes()
+                ).hexdigest(),
+                "status": "PASS",
+            },
+        )
+        release_authorization_path = control / (
+            "LAB_TOOL_RELEASE_LOCKED_PACKAGE_BUILD_AUTHORIZATION.json"
+        )
+        release_authorization = {
+            "authorization_class": "PACKAGE_BUILD_AUTHORIZATION",
+            "authorization_id": "AUTH-LAB-TOOL-RELEASE",
+            "forbidden_actions": [
+                "INSTALL",
+                "LAB_CERTIFICATION",
+                "LINKAGE_PROJECT_BOOTSTRAP",
+                "MAIN_PROJECT_BOOTSTRAP",
+                "OTHER_PIPELINE_ACTION_EXECUTION",
+                "TARGET_RUNTIME_INSTALLATION",
+                "REAL_TARGET_INSTALL",
+                "WORKPACK_EXECUTION",
+            ],
+            "granted_transitions": 1,
+            "max_transitions": 1,
+            "may_auto_advance": False,
+            "real_target_install_allowed": False,
+            "scope": {
+                "dag_node_ids": ["LAB_TOOL_RELEASE_LOCKED"],
+                "pipeline_action_ids": ["LAB_TOOL_RELEASE_LOCKED"],
+                "workpack_ids": [],
+            },
+            "status": "GRANTED",
+        }
+        write_json(release_authorization_path, release_authorization)
+        transition_ledger_path = control / "release-transition-ledger.jsonl"
+        transition_ledger_path.write_text("{}\n", encoding="utf-8")
+        promotion_ledger_path = control / "release-promotion-ledger.jsonl"
+        promotion_ledger_path.write_text("{}\n", encoding="utf-8")
+        independent_path = release_dir / "INDEPENDENT_VALIDATION_RECEIPT.json"
+        write_json(
+            independent_path,
+            {
+                "archive_sha256": archive_hash,
+                "command_exit_code": 0,
+                "independent_validation_exit_code": 0,
+                "install_performed": False,
+                "pipeline_action_id": "LAB_TOOL_RELEASE_LOCKED",
+                "status": "PASS",
+            },
+        )
+        release_result_path = evidence / "LAB_TOOL_RELEASE_LOCKED.result.json"
+        write_json(
+            release_result_path,
+            {
+                "archive_sha256": archive_hash,
+                "authorization_transitions_consumed": 1,
+                "pipeline_action_id": "LAB_TOOL_RELEASE_LOCKED",
+                "status": "PASS",
+                "success_gate": "LAB_TOOL_RELEASE_LOCKED_PASS",
+            },
+        )
+        promotion_path = evidence / "LAB_TOOL_RELEASE_LOCKED.promotion.json"
+        write_json(
+            promotion_path,
+            {
+                "install_started": False,
+                "linkage_project_started": False,
+                "main_project_started": False,
+                "next_node_activated": False,
+                "next_node_id": "LINKAGE_BOOTSTRAP",
+                "result_sha256": hashlib.sha256(
+                    release_result_path.read_bytes()
+                ).hexdigest(),
+                "status": "PROMOTED_STOPPED_BEFORE_LINKAGE_BOOTSTRAP",
+            },
+        )
+        runtime.update(
+            {
+                "active_dag_node": None,
+                "active_pipeline_action_id": None,
+                "authorization_consumptions": {"AUTH-LAB-TOOL-RELEASE": 1},
+                "completed_pipeline_action_ids": ["LAB_TOOL_RELEASE_LOCKED"],
+                "completed_workpack_ids": expected_workpacks + ["LAB-SELFTEST"],
+                "driver_status": "STOPPED_AFTER_AUTHORIZED_SCOPE_CONSUMED",
+                "recovery": {"required": False},
+            }
+        )
+        runtime.pop("state_hash", None)
+        runtime["state_hash"] = hashlib.sha256(
+            json.dumps(
+                runtime,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        write_json(runtime_path, runtime)
+        completion_receipt_path = (
+            control / "LAB_TOOL_RELEASE_LOCKED_COMPLETION_RECEIPT.json"
+        )
+        completion_receipt = {
+            "action_result_ref": action_result_path.relative_to(build_root).as_posix(),
+            "action_result_sha256": hashlib.sha256(
+                action_result_path.read_bytes()
+            ).hexdigest(),
+            "archive_ref": archive_path.relative_to(build_root).as_posix(),
+            "archive_sha256": archive_hash,
+            "authorization_ref": release_authorization_path.relative_to(
+                build_root
+            ).as_posix(),
+            "authorization_sha256": hashlib.sha256(
+                release_authorization_path.read_bytes()
+            ).hexdigest(),
+            "authorization_transitions_consumed": 1,
+            "candidate_content_sha256": _candidate_tree_hash(candidate),
+            "command_exit_code": 0,
+            "completed_pipeline_action_ids": ["LAB_TOOL_RELEASE_LOCKED"],
+            "conformance_interface_ref": interface_path.relative_to(
+                build_root
+            ).as_posix(),
+            "conformance_interface_sha256": hashlib.sha256(
+                interface_path.read_bytes()
+            ).hexdigest(),
+            "distribution_descriptor_ref": distribution_path.relative_to(
+                build_root
+            ).as_posix(),
+            "distribution_descriptor_sha256": hashlib.sha256(
+                distribution_path.read_bytes()
+            ).hexdigest(),
+            "driver_status": "STOPPED_AFTER_AUTHORIZED_SCOPE_CONSUMED",
+            "independent_validation_exit_code": 0,
+            "independent_validation_receipt_ref": independent_path.relative_to(
+                build_root
+            ).as_posix(),
+            "independent_validation_receipt_sha256": hashlib.sha256(
+                independent_path.read_bytes()
+            ).hexdigest(),
+            "install_started": False,
+            "lab_certification_started": False,
+            "lab_tool_release_result_ref": release_result_path.relative_to(
+                build_root
+            ).as_posix(),
+            "lab_tool_release_result_sha256": hashlib.sha256(
+                release_result_path.read_bytes()
+            ).hexdigest(),
+            "linkage_project_started": False,
+            "main_project_started": False,
+            "manifest_ref": manifest_path.relative_to(build_root).as_posix(),
+            "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            "promotion_ledger_ref": promotion_ledger_path.relative_to(
+                build_root
+            ).as_posix(),
+            "promotion_ledger_sha256": hashlib.sha256(
+                promotion_ledger_path.read_bytes()
+            ).hexdigest(),
+            "promotion_ref": promotion_path.relative_to(build_root).as_posix(),
+            "promotion_sha256": hashlib.sha256(
+                promotion_path.read_bytes()
+            ).hexdigest(),
+            "runtime_state_ref": runtime_path.relative_to(build_root).as_posix(),
+            "runtime_state_sha256": hashlib.sha256(
+                runtime_path.read_bytes()
+            ).hexdigest(),
+            "status": "LAB_TOOL_RELEASE_LOCKED_COMPLETE_STOPPED_BEFORE_LINKAGE_BOOTSTRAP",
+            "target_runtime_install_started": False,
+            "transition_ledger_ref": transition_ledger_path.relative_to(
+                build_root
+            ).as_posix(),
+            "transition_ledger_sha256": hashlib.sha256(
+                transition_ledger_path.read_bytes()
+            ).hexdigest(),
+        }
+        write_json(completion_receipt_path, completion_receipt)
+        release_descriptor_path = (
+            control / "PROGRAM_DRIVER_DESCRIPTOR_AFTER_LAB_TOOL_RELEASE.json"
+        )
+        release_descriptor = {
+            "archive_sha256": archive_hash,
+            "candidate_content_sha256": _candidate_tree_hash(candidate),
+            "completed_pipeline_action_ids": ["LAB_TOOL_RELEASE_LOCKED"],
+            "completed_workpack_ids": expected_workpacks + ["LAB-SELFTEST"],
+            "completion_receipt_ref": completion_receipt_path.relative_to(
+                build_root
+            ).as_posix(),
+            "completion_receipt_sha256": hashlib.sha256(
+                completion_receipt_path.read_bytes()
+            ).hexdigest(),
+            "conformance_interface_sha256": hashlib.sha256(
+                interface_path.read_bytes()
+            ).hexdigest(),
+            "driver_entrypoint_ref": driver_entrypoint.relative_to(
+                build_root
+            ).as_posix(),
+            "driver_entrypoint_sha256": hashlib.sha256(
+                driver_entrypoint.read_bytes()
+            ).hexdigest(),
+            "driver_source_ref": driver_source.relative_to(build_root).as_posix(),
+            "driver_source_sha256": hashlib.sha256(
+                driver_source.read_bytes()
+            ).hexdigest(),
+            "driver_status": "STOPPED_AFTER_AUTHORIZED_SCOPE_CONSUMED",
+            "driver_version": "0.3.0",
+            "install_started": False,
+            "lab_certification_started": False,
+            "lab_tool_release_started": True,
+            "linkage_project_started": False,
+            "main_project_started": False,
+            "next_node_activated": False,
+            "next_node_id": "LINKAGE_BOOTSTRAP",
+            "prior_descriptor_ref": repaired_descriptor_path.relative_to(
+                build_root
+            ).as_posix(),
+            "prior_descriptor_sha256": hashlib.sha256(
+                repaired_descriptor_path.read_bytes()
+            ).hexdigest(),
+            "real_target_install_started": False,
+            "runtime_state_sha256": hashlib.sha256(
+                runtime_path.read_bytes()
+            ).hexdigest(),
+            "status": "LAB_TOOL_RELEASE_LOCKED_PASS_STOPPED_BEFORE_LINKAGE_BOOTSTRAP",
+            "target_runtime_install_started": False,
+        }
+        write_json(release_descriptor_path, release_descriptor)
+
+        self.assertFalse(
+            _authorized_lab_tool_release_preparation_materialization(
+                candidate,
+                execution,
+                launcher,
+                {"executor_role": "CODEX_CODING_AGENT"},
+            )
+        )
+        self.assertTrue(
+            _authorized_lab_tool_release_materialization(
+                candidate,
+                execution,
+                launcher,
+                {"executor_role": "CODEX_CODING_AGENT"},
+            )
+        )
+
+    def test_immutable_candidate_rejects_candidate_internal_write_root(self) -> None:
+        candidate = self.root / "mutated-immutable-candidate"
+        execution = self.root / "mutated-build-program" / "execution"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"].update(
+            {"output_root": str(candidate), "execution_root": str(execution)}
+        )
+        ir["target"]["start_package_immutability_policy"] = {
+            "candidate_root_read_only_after_atomic_publication": True
+        }
+        compile_candidate(
+            ir,
+            SPEC_ROOT,
+            self.root / "mutated-immutable-staging",
+            candidate,
+            CREATED_AT,
+        )
+        self._make_tree_writable(candidate)
+        capsule_path = candidate / "CAPSULE.json"
+        capsule = json.loads(capsule_path.read_text(encoding="utf-8"))
+        capsule["allowed_write_paths"] = [str(candidate / "repository")]
+        capsule_path.write_text(
+            json.dumps(capsule, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+        codes = {
+            item["code"]
+            for item in validate_candidate(candidate)["blocking_findings"]
+        }
+        self.assertIn("CANDIDATE_IMMUTABILITY_VIOLATION", codes)
+
+    def test_prepublication_accepts_nonexecuting_negative_fixture_data(
+        self,
+    ) -> None:
+        candidate = self.root / "negative-fixture-prepublication-candidate"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"].update(
+            {
+                "output_root": str(candidate),
+                "execution_root": str(
+                    self.root / "negative-fixture-prepublication-execution"
+                ),
+                "portability_mode": "LOGICAL_RESOURCE_URI",
+            }
+        )
+        ir["target"]["start_package_immutability_policy"] = {
+            "candidate_root_read_only_after_atomic_publication": True,
+            "candidate_execution_roots_must_not_overlap": True,
+        }
+        fixture = {
+            "case_id": "NEG-V29-E45-WORKPACK-RUNTIME-WRITE-ROOT",
+            "atom_ids": ["ATOM-001"],
+            "description": (
+                "Candidate write roots are data in this non-executable "
+                "negative fixture only."
+            ),
+            "expected_failure": "COMMAND_OVERLAY_WRITE_ROOT_INVALID",
+            "fixture_kind": "NON_EXECUTABLE_JSON",
+            "input_fixture": {
+                "allowed_write_roots": ["harness-resource://candidate"]
+            },
+            "origin": (
+                "EPOCH48_NONEXECUTABLE_NEGATIVE_FIXTURE_IMMUTABILITY_SCOPE"
+            ),
+        }
+        projected_ir = {**ir, "negative_cases": [*ir["negative_cases"], fixture]}
+        projected_cases = _mandatory_negative_cases(projected_ir)
+        with patch(
+            "harness_foundry_factory.compiler._mandatory_negative_cases",
+            return_value=projected_cases,
+        ):
+            compile_candidate(
+                ir,
+                SPEC_ROOT,
+                self.root / "negative-fixture-prepublication-staging",
+                candidate,
+                CREATED_AT,
+            )
+
+        report = _validate_prepublication_staging_candidate(
+            candidate,
+            expected_target_root=(
+                self.root / "negative-fixture-prepublication-absent-target"
+            ),
+            authoritative_sources=ir["sources"],
+            authoritative_requirement_ir=ir,
+        )
+
+        self.assertEqual(report["status"], "PASS", report["blocking_findings"])
+        self.assertFalse(report["commands_executed"])
+
+    def test_overlapping_candidate_and_execution_roots_are_rejected(self) -> None:
+        candidate = self.root / "overlap-candidate"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"].update(
+            {
+                "output_root": str(candidate),
+                "execution_root": str(candidate / "execution"),
+            }
+        )
+        ir["target"]["start_package_immutability_policy"] = {
+            "candidate_root_read_only_after_atomic_publication": True
+        }
+
+        with self.assertRaisesRegex(ValueError, "must not overlap"):
+            compile_candidate(
+                ir,
+                SPEC_ROOT,
+                self.root / "overlap-staging",
+                candidate,
+                CREATED_AT,
+            )
+
+    def test_missing_execution_root_compiles_to_absent_logical_binding(self) -> None:
+        candidate = self.root / "missing-execution-root-candidate"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"]["output_root"] = str(candidate)
+        ir["target"]["start_package_immutability_policy"] = {
+            "candidate_root_access": "READ_ONLY_AFTER_ATOMIC_PUBLICATION"
+        }
+
+        compile_candidate(
+            ir,
+            SPEC_ROOT,
+            self.root / "missing-execution-root-staging",
+            candidate,
+            CREATED_AT,
+        )
+        context = json.loads(
+            (candidate / "START_CONTEXT.json").read_text(encoding="utf-8")
+        )
+        planned_execution = candidate.with_name(
+            ".missing-execution-root-candidate."
+            "hffactory-planned-execution-PROGRAM-REFERENCE-HARNESS"
+        )
+        self.assertEqual(context["candidate_root"], "harness-resource://candidate")
+        self.assertEqual(context["execution_root"], "harness-resource://execution")
+        self.assertFalse(context["candidate_execution_root_overlap"])
+        self.assertFalse(planned_execution.exists())
+
+    def test_frozen_provenance_authority_aliases_and_unstructured_negative_cases_compile(self) -> None:
+        candidate = self.root / "normalized-frozen-input-candidate"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"]["output_root"] = str(candidate)
+        ir["sources"][0]["authority_level"] = "NORMATIVE_USER_SELECTED"
+        ir["sources"].append(
+            {
+                **ir["sources"][0],
+                "source_id": "SRC-SUPPLEMENTAL-001",
+                "path_or_uri": "chat://reference/thread-1/supplement",
+                "sha256": "ba5f" * 16,
+                "authority_level": "HUMAN_PROVIDED_SUPPLEMENT",
+            }
+        )
+        ir["negative_cases"][0].pop("expected_failure")
+        ir["decisions"].append(
+            {
+                "decision_id": "DEC-PLACEHOLDER-HISTORY-001",
+                "decision": "A prior placeholder example was normalized before freeze.",
+                "status": "CONFIRMED",
+            }
+        )
+
+        compile_candidate(
+            ir,
+            SPEC_ROOT,
+            self.root / "normalized-frozen-input-staging",
+            candidate,
+            CREATED_AT,
+        )
+
+        manifest = json.loads(
+            (candidate / "canonical_sources/SOURCE_MANIFEST.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        authorities = {
+            item["source_id"]: item["authority_level"]
+            for item in manifest["sources"]
+        }
+        negative = json.loads(
+            (candidate / "validation/NEGATIVE_CASES.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(authorities["SRC-CHAT-001"], "HUMAN_APPROVED")
+        self.assertEqual(authorities["SRC-SUPPLEMENTAL-001"], "HUMAN_PROVIDED")
+        self.assertEqual(
+            negative["cases"][0]["expected_failure"], "EXPECTED_REJECTION"
+        )
+        self.assertEqual(validate_candidate(candidate)["status"], "PASS")
+
+    def test_frozen_historical_angle_bracket_literal_is_not_a_template_placeholder(self) -> None:
+        candidate = self.root / "historical-angle-bracket-candidate"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"]["output_root"] = str(candidate)
+        historical_reason = (
+            "The earlier request used the placeholder <new absolute empty path>; "
+            "that literal is retained only as frozen decision history."
+        )
+        ir["decisions"].append(
+            {
+                "decision_id": "DEC-HISTORICAL-ANGLE-BRACKET-001",
+                "kind": "REOPEN_REQUIREMENTS",
+                "reason": historical_reason,
+                "status": "CONFIRMED",
+            }
+        )
+
+        compile_candidate(
+            ir,
+            SPEC_ROOT,
+            self.root / "historical-angle-bracket-staging",
+            candidate,
+            CREATED_AT,
+        )
+
+        frozen = json.loads(
+            (candidate / "canonical_sources/FROZEN_REQUIREMENT_IR.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        decisions = json.loads(
+            (candidate / "canonical_sources/REQUIREMENT_DECISIONS.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(frozen["decisions"][-1]["reason"], historical_reason)
+        self.assertEqual(decisions["decisions"][-1]["reason"], historical_reason)
+        self.assertEqual(
+            validate_candidate(
+                candidate,
+                authoritative_sources=ir["sources"],
+                authoritative_requirement_ir=ir,
+            )["status"],
+            "PASS",
+        )
+
+    def test_active_and_generated_template_placeholders_remain_fail_closed(self) -> None:
+        candidate = self.root / "active-placeholder-candidate"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"]["output_root"] = str(candidate)
+        ir["target"]["name"] = "<TARGET-NAME>"
+
+        with self.assertRaisesRegex(ValueError, "unresolved template placeholders"):
+            compile_candidate(
+                ir,
+                SPEC_ROOT,
+                self.root / "active-placeholder-staging",
+                candidate,
+                CREATED_AT,
+            )
+        self.assertFalse(candidate.exists())
+
+        self._make_tree_writable(self.candidate)
+        context_path = self.candidate / "START_CONTEXT.json"
+        context = json.loads(context_path.read_text(encoding="utf-8"))
+        context["program_id"] = "<PROGRAM-ID>"
+        context["<UNRESOLVED-KEY>"] = "must remain detectable"
+        context_path.write_text(
+            json.dumps(context, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        findings = [
+            finding
+            for check in validate_candidate(self.candidate)["checks"]
+            for finding in check["findings"]
+        ]
+        self.assertIn(
+            "UNRESOLVED_TEMPLATE_PLACEHOLDER",
+            {finding["code"] for finding in findings},
+        )
+
+    def test_structural_hash_repair_preserves_planned_executor_hash_contract(self) -> None:
+        self._make_tree_writable(self.candidate)
+        _repair_structural_hashes(self.candidate)
+        _seal_candidate_tree(self.candidate)
+
+        self.assertEqual(validate_candidate(self.candidate)["status"], "PASS")
+
+    def test_rebuild_at_same_path_has_identical_content_hash(self) -> None:
+        first_hash = self.compile_result["content_sha256"]
+        self._make_tree_writable(self.candidate)
+        shutil.rmtree(self.candidate)
+
+        second = self._compile("staging-rebuild")
+
+        self.assertEqual(second["content_sha256"], first_hash)
+        self.assertEqual(second["file_count"], self.compile_result["file_count"])
+        self.assertEqual(validate_candidate(self.candidate)["status"], "PASS")
+
+    def test_same_ir_existing_candidate_is_recovered_without_overwrite(self) -> None:
+        provenance_before = (
+            self.candidate / "FACTORY_PROVENANCE.json"
+        ).read_bytes()
+
+        recovered = self._compile("unused-recovery-staging")
+
+        self.assertTrue(recovered["recovered_existing_candidate"])
+        self.assertEqual(
+            recovered["content_sha256"], self.compile_result["content_sha256"]
+        )
+        self.assertFalse((self.root / "unused-recovery-staging").exists())
+        self.assertEqual(
+            (self.candidate / "FACTORY_PROVENANCE.json").read_bytes(),
+            provenance_before,
+        )
+        self.assertEqual(validate_candidate(self.candidate)["status"], "PASS")
+
+    def test_nonempty_output_directory_is_rejected(self) -> None:
+        occupied = self.root / "occupied"
+        occupied.mkdir()
+        (occupied / "user-owned.txt").write_text("preserve", encoding="utf-8")
+
+        with self.assertRaisesRegex(FileExistsError, "candidate root is not empty"):
+            self._compile("staging-collision", occupied)
+
+        self.assertEqual(
+            (occupied / "user-owned.txt").read_text(encoding="utf-8"), "preserve"
+        )
+
+    def test_deleting_p3_from_phase_order_is_rejected(self) -> None:
+        self._mutate_json(
+            "PHASE_DEPENDENCY_MANIFEST.json",
+            lambda value: value.update(
+                {"phase_order": [item for item in value["phase_order"] if item != "P3"]}
+            ),
+        )
+
+        self.assertIn("P3_PHASE_ORDER_INVALID", self._finding_codes())
+
+    def test_reordering_release_steps_is_rejected(self) -> None:
+        def swap_first_two(value: dict) -> None:
+            value["steps"][0], value["steps"][1] = value["steps"][1], value["steps"][0]
+
+        self._mutate_json("RELEASE_PIPELINE_MANIFEST.json", swap_first_two)
+
+        self.assertIn("RELEASE_PIPELINE_ORDER_INVALID", self._finding_codes())
+
+    def test_granting_execution_authorization_is_rejected(self) -> None:
+        self._mutate_json(
+            "EXECUTION_AUTHORIZATION.json",
+            lambda value: value.update(
+                {"status": "GRANTED", "may_auto_advance": True, "max_transitions": 1}
+            ),
+        )
+
+        self.assertIn("EXECUTION_AUTHORIZATION_PREGRANTED", self._finding_codes())
+
+    def test_removing_codex_false_receipt_negative_case_is_rejected(self) -> None:
+        def remove_codex_case(value: dict) -> None:
+            value["cases"] = [
+                item
+                for item in value["cases"]
+                if item.get("case_id")
+                not in {"NEG-001", "NEG-HF28-CODEX-SELF-REPORT"}
+            ]
+
+        self._mutate_json("validation/NEGATIVE_CASES.json", remove_codex_case)
+
+        self.assertIn("FALSE_CODEX_RECEIPT_CASE_MISSING", self._finding_codes())
+
+    def test_forged_self_reported_codex_receipt_authority_is_rejected(self) -> None:
+        self._mutate_json(
+            "constitution/RUNTIME_ATTESTATION_POLICY.json",
+            lambda value: value.update(
+                {
+                    "self_reported_receipt_is_sufficient": True,
+                    "trusted_issuer": "PYTHON_SELF_REPORT",
+                    "unverified_invocation_may_complete_stage": True,
+                }
+            ),
+        )
+
+        self.assertEqual(validate_candidate(self.candidate)["status"], "FAIL")
+
+    def test_relative_executable_is_rejected(self) -> None:
+        def make_relative(value: dict) -> None:
+            value["commands"][0]["executable"] = "python3"
+            value["commands"][0]["executable_abs"] = "python3"
+
+        self._mutate_json("COMMAND_MANIFEST.json", make_relative)
+
+        self.assertIn("COMMAND_EXECUTABLE_NOT_ABSOLUTE", self._finding_codes())
+
+    def test_target_id_path_traversal_is_rejected_without_writes(self) -> None:
+        before = self._tree_snapshot(self.root)
+        traversal_ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        traversal_ir["target"]["id"] = "x/../../../escaped"
+        traversal_ir["target"]["output_root"] = str(
+            self.root / "traversal-candidate"
+        )
+
+        with self.assertRaisesRegex(ValueError, "path-safe identifier"):
+            compile_candidate(
+                traversal_ir,
+                SPEC_ROOT,
+                self.root / "traversal-staging",
+                self.root / "traversal-candidate",
+                CREATED_AT,
+            )
+
+        self.assertEqual(self._tree_snapshot(self.root), before)
+
+    def test_manifest_cannot_hide_deleted_start_here(self) -> None:
+        self._mutate_json(
+            "PACKAGE_MANIFEST.json",
+            lambda value: value.update(
+                {
+                    "required_entry_files": [
+                        item
+                        for item in value["required_entry_files"]
+                        if item != "START_HERE.md"
+                    ]
+                }
+            ),
+        )
+        (self.candidate / "START_HERE.md").unlink()
+
+        codes = self._finding_codes()
+        self.assertIn("REQUIRED_FILE_MANIFEST_TAMPERED", codes)
+        self.assertIn("REQUIRED_FILE_MISSING", codes)
+
+    def test_duplicate_atom_id_is_rejected(self) -> None:
+        self._mutate_json(
+            "canonical_sources/NORMATIVE_ATOM_CATALOG.json",
+            lambda value: value["atoms"].append(dict(value["atoms"][0])),
+        )
+
+        self.assertIn("ATOM_ID_NOT_UNIQUE", self._finding_codes())
+
+    def test_empty_engineering_dag_edges_are_rejected(self) -> None:
+        self._mutate_json(
+            "ENGINEERING_PROJECT_DAG.json",
+            lambda value: value.update({"edges": []}),
+        )
+
+        self.assertIn("ENGINEERING_DAG_EDGES_INVALID", self._finding_codes())
+
+    def test_release_step_with_empty_requires_is_rejected(self) -> None:
+        self._mutate_json(
+            "RELEASE_PIPELINE_MANIFEST.json",
+            lambda value: value["steps"][2].update({"requires": []}),
+        )
+
+        self.assertIn("RELEASE_STEP_DEPENDENCY_INVALID", self._finding_codes())
+
+    def test_existing_system_executable_is_rejected_as_planned_target(self) -> None:
+        def use_system_executable(value: dict) -> None:
+            command = next(
+                item
+                for item in value["commands"]
+                if isinstance(item.get("argv"), list) and item["argv"]
+            )
+            command["executable"] = "/bin/true"
+            command["executable_abs"] = "/bin/true"
+            command["argv"][0] = "/bin/true"
+
+        self._mutate_json("COMMAND_MANIFEST.json", use_system_executable)
+
+        self.assertIn("COMMAND_EXECUTABLE_NOT_ABSOLUTE", self._finding_codes())
+
+    def test_materialized_codex_provenance_survives_runtime_progress(self) -> None:
+        candidate, _execution, _launcher = self._materialized_codex_candidate()
+
+        report = validate_candidate(candidate)
+
+        self.assertEqual(report["status"], "PASS")
+        self.assertNotIn(
+            "COMMAND_EXECUTABLE_MATERIALIZATION_UNVERIFIED",
+            {item["code"] for item in report["blocking_findings"]},
+        )
+
+    def test_portable_candidate_validator_does_not_claim_receiver_runtime_tamper(self) -> None:
+        candidate, _execution, launcher = self._materialized_codex_candidate()
+        launcher.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+
+        report = validate_candidate(candidate)
+
+        self.assertEqual(report["status"], "PASS")
+        self.assertFalse(report["runtime_claims_verified"])
+
+    def test_empty_three_project_markdown_is_rejected(self) -> None:
+        self._make_tree_writable(self.candidate)
+        for directory in ("external_lab", "linkage_review", "main_build"):
+            for name in ("README.md", "PROJECT_CHARTER.md", "BUILD_INSTALL_PLAN.md"):
+                (self.candidate / "project_start_packages" / directory / name).write_text(
+                    "", encoding="utf-8"
+                )
+
+        self.assertIn("PROJECT_DOCUMENT_CONTRACT_INCOMPLETE", self._finding_codes())
+
+    def test_zero_iteration_loop_policy_is_rejected(self) -> None:
+        self._mutate_json(
+            "LOOP_POLICY.json",
+            lambda value: value["loop_types"]["WORKPACK_REVIEW_FIX"].update(
+                {"max_iterations": 0}
+            ),
+        )
+
+        self.assertIn("LOOP_POLICY_INCOMPLETE", self._finding_codes())
+
+    def test_engineering_node_machine_contract_cannot_be_compressed(self) -> None:
+        self._mutate_json(
+            "ENGINEERING_PROJECT_DAG.json",
+            lambda value: value["nodes"][5].pop("failure_return_node"),
+        )
+
+        self.assertIn(
+            "ENGINEERING_DAG_NODE_CONTRACT_INCOMPLETE", self._finding_codes()
+        )
+
+    def test_every_engineering_success_output_is_inside_an_allowed_write_path(
+        self,
+    ) -> None:
+        dag = json.loads(
+            (self.candidate / "ENGINEERING_PROJECT_DAG.json").read_text(
+                encoding="utf-8"
+            )
+        )
+
+        for node in dag["nodes"]:
+            allowed_roots = [
+                _contract_path(value) for value in node["allowed_write_paths"]
+            ]
+            for output_ref in node["success_output_refs"]:
+                output = _contract_path(output_ref)
+                self.assertTrue(
+                    any(
+                        output == allowed_root
+                        or output.is_relative_to(allowed_root)
+                        for allowed_root in allowed_roots
+                    ),
+                    msg=f"{node['node_id']}: {output_ref}",
+                )
+
+        matrix = json.loads(
+            (
+                self.candidate
+                / "validation/DAG_PATH_CONTAINMENT_MATRIX.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(matrix["status"], "PASS")
+        self.assertEqual(matrix["node_count"], len(dag["nodes"]))
+        self.assertEqual(matrix["pass_count"], len(dag["nodes"]))
+        self.assertTrue(
+            all(not row["outside_success_output_refs"] for row in matrix["rows"])
+        )
+        receipt = json.loads(
+            (
+                self.candidate
+                / "validation/HUMAN_REVIEW_CLOSURE_RECEIPT.json"
+            ).read_text(encoding="utf-8")
+        )
+        self.assertEqual(receipt["status"], "PASS")
+        self.assertEqual(receipt["closure_count"], 0)
+        self.assertFalse(receipt["runtime_claims_verified"])
+        self.assertFalse(receipt["workpack_execution_authorized"])
+
+    def test_engineering_success_output_sibling_prefix_is_rejected(self) -> None:
+        def move_output_to_sibling(value: dict) -> None:
+            node = value["nodes"][0]
+            node_id = node["node_id"]
+            node["success_output_refs"] = [
+                "harness-resource://execution/evidence/engineering_dag/"
+                f"{node_id}.result.json"
+            ]
+
+        self._mutate_json("ENGINEERING_PROJECT_DAG.json", move_output_to_sibling)
+
+        self.assertIn(
+            "ENGINEERING_DAG_SUCCESS_OUTPUT_OUTSIDE_ALLOWED_WRITE_PATHS",
+            self._finding_codes(),
+        )
+
+    def test_portable_self_check_rejects_hash_consistent_dag_semantic_tamper(
+        self,
+    ) -> None:
+        candidate = self.root / "portable-semantic-tamper-candidate"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"].update(
+            {
+                "output_root": str(candidate),
+                "execution_root": str(self.root / "portable-semantic-execution"),
+                "portability_mode": "LOGICAL_RESOURCE_URI",
+            }
+        )
+        ir["target"]["start_package_immutability_policy"] = {
+            "candidate_root_read_only_after_atomic_publication": True,
+            "candidate_execution_roots_must_not_overlap": True,
+        }
+        compile_candidate(
+            ir,
+            SPEC_ROOT,
+            self.root / "portable-semantic-tamper-staging",
+            candidate,
+            CREATED_AT,
+        )
+        dag_path = candidate / "ENGINEERING_PROJECT_DAG.json"
+        dag = json.loads(dag_path.read_text(encoding="utf-8"))
+        node = dag["nodes"][0]
+        node_id = node["node_id"]
+        node["success_output_refs"] = [
+            "harness-resource://execution/evidence/engineering_dag/"
+            f"{node_id}.result.json"
+        ]
+        self._write_json(dag_path, dag)
+        manifest_path = candidate / "validation/PORTABLE_FILE_MANIFEST.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["files"]["ENGINEERING_PROJECT_DAG.json"] = _file_hash(dag_path)
+        self._write_json(manifest_path, manifest)
+
+        completed = subprocess.run(
+            [sys.executable, "tools/self_check.py"],
+            cwd=candidate,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        result = json.loads(completed.stdout)
+        codes = {item["code"] for item in result["findings"]}
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn(
+            "ENGINEERING_DAG_SUCCESS_OUTPUT_OUTSIDE_ALLOWED_WRITE_PATHS",
+            codes,
+        )
+        self.assertIn("DAG_PATH_CONTAINMENT_MATRIX_INVALID", codes)
+        validator_codes = {
+            item["code"]
+            for item in validate_candidate(candidate)["blocking_findings"]
+        }
+        self.assertIn(
+            "ENGINEERING_DAG_SUCCESS_OUTPUT_OUTSIDE_ALLOWED_WRITE_PATHS",
+            validator_codes,
+        )
+        self.assertIn("DAG_PATH_CONTAINMENT_MATRIX_INVALID", validator_codes)
+
+    def test_human_review_closure_receipt_binds_declaration_and_evidence(
+        self,
+    ) -> None:
+        candidate = self.root / "closure-receipt-candidate"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"].update(
+            {
+                "output_root": str(candidate),
+                "execution_root": str(self.root / "closure-receipt-execution"),
+                "portability_mode": "LOGICAL_RESOURCE_URI",
+                "environment_contract_refs": [
+                    "validation/DAG_PATH_CONTAINMENT_MATRIX.json",
+                    "validation/HUMAN_REVIEW_CLOSURE_RECEIPT.json",
+                ],
+            }
+        )
+        ir["target"]["start_package_immutability_policy"] = {
+            "candidate_root_read_only_after_atomic_publication": True,
+            "candidate_execution_roots_must_not_overlap": True,
+        }
+        ir["target"]["human_review_v0_7_closure"] = {
+            "finding_ids": [
+                "FINDING-V0-7-STANDALONE-DAG-CONTAINMENT-SELF-CHECK-001"
+            ],
+            "superseded_candidate": "Candidate_v0_7",
+            "replacement_candidate": "Candidate_v0_8",
+            "required_closures": [
+                "Standalone self-check recomputes DAG containment."
+            ],
+            "status": (
+                "CLOSURE_REQUIRED_IN_REPLACEMENT_CANDIDATE_STATIC_RECEIPT"
+            ),
+            "workpack_execution_authorized": False,
+        }
+        compile_candidate(
+            ir,
+            SPEC_ROOT,
+            self.root / "closure-receipt-staging",
+            candidate,
+            CREATED_AT,
+        )
+
+        receipt_path = (
+            candidate / "validation/HUMAN_REVIEW_CLOSURE_RECEIPT.json"
+        )
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        self.assertEqual(receipt["closure_count"], 1)
+        closure = receipt["closures"][0]
+        self.assertEqual(
+            closure["requirement_key"], "human_review_v0_7_closure"
+        )
+        self.assertEqual(closure["status"], "PASS")
+        self.assertTrue(
+            {
+                "ENGINEERING_PROJECT_DAG.json",
+                "validation/DAG_PATH_CONTAINMENT_MATRIX.json",
+            }.issubset(set(closure["evidence_refs"]))
+        )
+        self.assertEqual(validate_candidate(candidate)["status"], "PASS")
+
+        closure["evidence_sha256"][
+            "validation/DAG_PATH_CONTAINMENT_MATRIX.json"
+        ] = "0" * 64
+        self._write_json(receipt_path, receipt)
+        self.assertIn(
+            "HUMAN_REVIEW_CLOSURE_RECEIPT_INVALID",
+            {
+                item["code"]
+                for item in validate_candidate(candidate)["blocking_findings"]
+            },
+        )
+
+    def test_frozen_human_review_closure_cannot_store_lifecycle_state(
+        self,
+    ) -> None:
+        candidate = self.root / "stale-closure-status-candidate"
+        ir = json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+        ir["target"]["output_root"] = str(candidate)
+        ir["target"]["human_review_v0_7_closure"] = {
+            "finding_id": "FINDING-V0-7-CLOSURE-LIFECYCLE-MODELING-001",
+            "superseded_candidate": "Candidate_v0_7",
+            "replacement_candidate": "Candidate_v0_8",
+            "required_closures": ["Closure lifecycle belongs in a receipt."],
+            "status": "REQUIREMENTS_REPAIRED_PENDING_FREEZE_AND_REGENERATION",
+        }
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "HUMAN_REVIEW_LIFECYCLE_STATE_IN_FROZEN_IR",
+        ):
+            compile_candidate(
+                ir,
+                SPEC_ROOT,
+                self.root / "stale-closure-status-staging",
+                candidate,
+                CREATED_AT,
+            )
+
+    def test_every_project_workpack_is_bound_once_and_main_paths_are_explicit(
+        self,
+    ) -> None:
+        dag = json.loads(
+            (self.candidate / "ENGINEERING_PROJECT_DAG.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        release = json.loads(
+            (self.candidate / "RELEASE_PIPELINE_MANIFEST.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        nodes = {item["node_id"]: item for item in dag["nodes"]}
+        matrix = json.loads(
+            (
+                self.candidate
+                / "validation/DAG_PATH_CONTAINMENT_MATRIX.json"
+            ).read_text(encoding="utf-8")
+        )
+        matrix_rows = {item["node_id"]: item for item in matrix["rows"]}
+        registration = nodes["MAIN_PROGRAM_REGISTRATION"]
+        self.assertEqual(registration["node_kind"], "CONTROL_REGISTRATION_GATE")
+        self.assertEqual(registration["owner_role"], "BUILD_PROGRAM_DRIVER")
+        self.assertIsNone(registration["workpack_id"])
+        self.assertEqual(
+            registration["pipeline_action_id"], "MAIN_PROGRAM_REGISTRATION"
+        )
+        main_repository = (
+            "harness-resource://execution/"
+            "project_start_packages/main_build/repository"
+        )
+        for node_id in (
+            "MAIN_EXECUTION_PACKAGE_MATERIALIZED",
+            "MAIN_G0_C0",
+            "MAIN_P1_C1",
+            "MAIN_P2_C2",
+            "MAIN_P3_C3_OR_APPROVED_NA",
+            "MAIN_P4_LOCAL_CLOSURE",
+        ):
+            self.assertIn(main_repository, nodes[node_id]["allowed_write_paths"])
+
+        mapped = [
+            item["workpack_id"]
+            for item in dag["nodes"]
+            if item.get("workpack_id")
+            and item["node_id"] != "MAIN_EXECUTION_PACKAGE_MATERIALIZED"
+        ]
+        mapped.extend(
+            workpack_id
+            for item in dag["nodes"]
+            for workpack_id in item.get("project_workpack_sequence", [])
+        )
+        mapped.extend(
+            item["project_workpack_id"]
+            for item in release["steps"]
+            if item.get("project_workpack_id")
+        )
+        declared = []
+        for directory in ("external_lab", "linkage_review", "main_build"):
+            index = json.loads(
+                (
+                    self.candidate
+                    / "project_start_packages"
+                    / directory
+                    / "WORKPACK_INDEX.json"
+                ).read_text(encoding="utf-8")
+            )
+            for item in index["workpacks"]:
+                declared.append(item["workpack_id"])
+                if item["program_control_surface"] != "ENGINEERING_PROJECT_DAG":
+                    continue
+                node = nodes[item["program_control_node_id"]]
+                self.assertTrue(
+                    set(item["allowed_write_paths"]).issubset(
+                        node["allowed_write_paths"]
+                    ),
+                    msg=item["workpack_id"],
+                )
+                self.assertEqual(
+                    matrix_rows[node["node_id"]]["allowed_write_paths"],
+                    node["allowed_write_paths"],
+                )
+        self.assertEqual(sorted(mapped), sorted(declared))
+        self.assertEqual(len(mapped), len(set(mapped)))
+        self.assertEqual(len(mapped), 16)
+        root_index = json.loads(
+            (self.candidate / "WORKPACK_INDEX.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            nodes["MAIN_EXECUTION_PACKAGE_MATERIALIZED"]["workpack_id"],
+            root_index["workpacks"][0]["workpack_id"],
+        )
+        self.assertNotIn(root_index["workpacks"][0]["workpack_id"], declared)
+
+    def test_engineering_node_cannot_drop_hash_bound_workpack_write_root(
+        self,
+    ) -> None:
+        candidate = self._compile_portable_candidate("missing-workpack-root")
+        dag_path = candidate / "ENGINEERING_PROJECT_DAG.json"
+        dag = json.loads(dag_path.read_text(encoding="utf-8"))
+        node = next(item for item in dag["nodes"] if item["node_id"] == "MAIN_G0_C0")
+        missing_root = next(
+            value
+            for value in node["allowed_write_paths"]
+            if value.endswith("/evidence/project_workpacks/MAIN_HARNESS_BUILD/MB-G0")
+        )
+        node["allowed_write_paths"].remove(missing_root)
+        self._write_json(dag_path, dag)
+        matrix_path = candidate / "validation/DAG_PATH_CONTAINMENT_MATRIX.json"
+        matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+        matrix["dag_sha256"] = _file_hash(dag_path)
+        next(
+            item for item in matrix["rows"] if item["node_id"] == "MAIN_G0_C0"
+        )["allowed_write_paths"] = list(node["allowed_write_paths"])
+        self._write_json(matrix_path, matrix)
+        portable_manifest_path = (
+            candidate / "validation/PORTABLE_FILE_MANIFEST.json"
+        )
+        portable_manifest = json.loads(
+            portable_manifest_path.read_text(encoding="utf-8")
+        )
+        portable_manifest["files"]["ENGINEERING_PROJECT_DAG.json"] = (
+            _file_hash(dag_path)
+        )
+        portable_manifest["files"][
+            "validation/DAG_PATH_CONTAINMENT_MATRIX.json"
+        ] = _file_hash(matrix_path)
+        self._write_json(portable_manifest_path, portable_manifest)
+
+        codes = {
+            item["code"]
+            for item in validate_candidate(candidate)["blocking_findings"]
+        }
+        self.assertIn("ENGINEERING_WORKPACK_WRITE_ROOT_PROJECTION_INVALID", codes)
+        self.assertIn("ENGINEERING_NODE_WRITE_ROOT_SET_INVALID", codes)
+        self.assertNotIn("DAG_PATH_CONTAINMENT_MATRIX_INVALID", codes)
+        standalone = subprocess.run(
+            [sys.executable, "tools/self_check.py"],
+            cwd=candidate,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        standalone_codes = {
+            item["code"]
+            for item in json.loads(standalone.stdout)["findings"]
+        }
+        self.assertNotEqual(standalone.returncode, 0)
+        self.assertIn(
+            "ENGINEERING_WORKPACK_WRITE_ROOT_PROJECTION_INVALID",
+            standalone_codes,
+        )
+        self.assertIn("ENGINEERING_NODE_WRITE_ROOT_SET_INVALID", standalone_codes)
+
+    def test_project_workpack_cannot_declare_arbitrary_execution_write_root(
+        self,
+    ) -> None:
+        candidate = self._compile_portable_candidate("arbitrary-workpack-root")
+        index_path = (
+            candidate
+            / "project_start_packages/main_build/WORKPACK_INDEX.json"
+        )
+        capsule_path = (
+            candidate
+            / "project_start_packages/main_build/capsules/MB-G0.capsule.json"
+        )
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        item = next(
+            value for value in index["workpacks"] if value["workpack_id"] == "MB-G0"
+        )
+        arbitrary_root = item["allowed_write_paths"][0].replace(
+            "/MB-G0", "/UNDECLARED-WORKPACK"
+        )
+        item["allowed_write_paths"].append(arbitrary_root)
+        capsule = json.loads(capsule_path.read_text(encoding="utf-8"))
+        capsule["allowed_write_paths"].append(arbitrary_root)
+        self._write_json(capsule_path, capsule)
+        item["capsule_sha256"] = _file_hash(capsule_path)
+        self._write_json(index_path, index)
+        portable_manifest_path = (
+            candidate / "validation/PORTABLE_FILE_MANIFEST.json"
+        )
+        portable_manifest = json.loads(
+            portable_manifest_path.read_text(encoding="utf-8")
+        )
+        portable_manifest["files"][
+            "project_start_packages/main_build/WORKPACK_INDEX.json"
+        ] = _file_hash(index_path)
+        portable_manifest["files"][
+            "project_start_packages/main_build/capsules/MB-G0.capsule.json"
+        ] = _file_hash(capsule_path)
+        self._write_json(portable_manifest_path, portable_manifest)
+
+        self.assertIn(
+            "PROJECT_WORKPACK_WRITE_ROOT_CONTRACT_INVALID",
+            {
+                item["code"]
+                for item in validate_candidate(candidate)["blocking_findings"]
+            },
+        )
+        standalone = subprocess.run(
+            [sys.executable, "tools/self_check.py"],
+            cwd=candidate,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(standalone.returncode, 0)
+        self.assertIn(
+            "PROJECT_WORKPACK_WRITE_ROOT_CONTRACT_INVALID",
+            {
+                item["code"]
+                for item in json.loads(standalone.stdout)["findings"]
+            },
+        )
+
+    def test_unknown_engineering_workpack_reference_is_rejected(self) -> None:
+        def replace_workpack(value: dict) -> None:
+            node = next(item for item in value["nodes"] if item.get("workpack_id"))
+            node["workpack_id"] = "TOTALLY-NONEXISTENT-WORKPACK"
+
+        self._mutate_json("ENGINEERING_PROJECT_DAG.json", replace_workpack)
+
+        codes = self._finding_codes()
+        self.assertIn("ENGINEERING_WORKPACK_BINDING_INVALID", codes)
+        self.assertIn("ENGINEERING_WORKPACK_REF_UNRESOLVED", codes)
+
+    def test_project_workpack_sequence_or_release_mapping_cannot_be_dropped(
+        self,
+    ) -> None:
+        def drop_sequence_item(value: dict) -> None:
+            node = next(
+                item for item in value["nodes"] if item["node_id"] == "LAB_BOOTSTRAP"
+            )
+            node["project_workpack_sequence"] = node[
+                "project_workpack_sequence"
+            ][:-1]
+
+        self._mutate_json("ENGINEERING_PROJECT_DAG.json", drop_sequence_item)
+
+        codes = self._finding_codes()
+        self.assertIn("ENGINEERING_WORKPACK_BINDING_INVALID", codes)
+        self.assertIn("PROJECT_WORKPACK_COVERAGE_INVALID", codes)
+
+    def test_unknown_release_workpack_reference_is_rejected(self) -> None:
+        def replace_workpack(value: dict) -> None:
+            step = next(
+                item
+                for item in value["steps"]
+                if item.get("project_workpack_id")
+            )
+            step["project_workpack_id"] = "TOTALLY-NONEXISTENT-WORKPACK"
+
+        self._mutate_json("RELEASE_PIPELINE_MANIFEST.json", replace_workpack)
+
+        codes = self._finding_codes()
+        self.assertIn("RELEASE_WORKPACK_BINDING_INVALID", codes)
+        self.assertIn("PROJECT_WORKPACK_COVERAGE_INVALID", codes)
+
+    def test_never_produced_project_workpack_requirement_is_rejected(self) -> None:
+        self._mutate_json(
+            "project_start_packages/external_lab/WORKPACK_INDEX.json",
+            lambda value: value["workpacks"][1].update(
+                {"requires": ["NEVER_PRODUCED_CAPABILITY"]}
+            ),
+        )
+
+        self.assertIn(
+            "PROJECT_WORKPACK_EXECUTION_CONTRACT_INVALID",
+            self._finding_codes(),
+        )
+
+    def test_deleting_project_command_surface_is_rejected(self) -> None:
+        self._mutate_json(
+            "project_start_packages/main_build/COMMAND_MANIFEST.json",
+            lambda value: value.update({"commands": []}),
+        )
+
+        codes = self._finding_codes()
+        self.assertIn("PROJECT_COMMAND_MANIFEST_INVALID", codes)
+        self.assertIn("PROJECT_WORKPACK_COMMAND_BINDING_INVALID", codes)
+
+    def test_phase_atom_routes_to_matching_project_workpacks_and_artifacts(
+        self,
+    ) -> None:
+        matrix = json.loads(
+            (
+                self.candidate
+                / "canonical_sources/ATOM_COVERAGE_MATRIX.json"
+            ).read_text(encoding="utf-8")
+        )
+        atom = next(item for item in matrix["coverage"] if item["atom_id"] == "ATOM-002")
+        self.assertEqual(atom["workpack_ids"], ["MB-P2", "MB-P3", "MB-P4"])
+        self.assertEqual(
+            atom["stage_ids"], ["P2", "P3", "C3", "P4_BUILD_INPUT"]
+        )
+        for workpack_id in ("MB-P3", "MB-P4"):
+            index = json.loads(
+                (
+                    self.candidate
+                    / "project_start_packages/main_build/WORKPACK_INDEX.json"
+                ).read_text(encoding="utf-8")
+            )
+            item = next(
+                value
+                for value in index["workpacks"]
+                if value["workpack_id"] == workpack_id
+            )
+            capsule = json.loads(
+                (
+                    self.candidate
+                    / f"project_start_packages/main_build/capsules/{workpack_id}.capsule.json"
+                ).read_text(encoding="utf-8")
+            )
+            result = json.loads(
+                (
+                    self.candidate
+                    / f"project_start_packages/main_build/results/{workpack_id}.result.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertIn("ATOM-002", item["intent_atom_ids"])
+            self.assertIn("ATOM-002", capsule["intent_atom_ids"])
+            self.assertIn("ATOM-002", result["intent_atom_ids"])
+
+    def test_atom_coverage_cannot_be_redirected_to_wrong_phase(self) -> None:
+        self._mutate_json(
+            "canonical_sources/ATOM_COVERAGE_MATRIX.json",
+            lambda value: next(
+                item
+                for item in value["coverage"]
+                if item["atom_id"] == "ATOM-002"
+            ).update(
+                {
+                    "workpack_ids": ["MB-G0"],
+                    "stage_ids": ["G0"],
+                    "owner_project_ids": ["MAIN_HARNESS_BUILD"],
+                }
+            ),
+        )
+
+        self.assertIn("COVERAGE_REFERENCE_UNRESOLVED", self._finding_codes())
+
+    def test_project_workpack_atom_reverse_binding_cannot_be_removed(self) -> None:
+        def remove_atom(value: dict) -> None:
+            item = next(
+                row for row in value["workpacks"] if row["workpack_id"] == "MB-P4"
+            )
+            item["intent_atom_ids"] = []
+
+        self._mutate_json(
+            "project_start_packages/main_build/WORKPACK_INDEX.json",
+            remove_atom,
+        )
+
+        self.assertIn(
+            "PROJECT_WORKPACK_EXECUTION_CONTRACT_INVALID",
+            self._finding_codes(),
+        )
+
+    def test_explicit_frozen_atom_coverage_overrides_semantic_default(self) -> None:
+        explicit_candidate = self.root / "explicit-coverage-candidate"
+        self.ir["target"]["output_root"] = str(explicit_candidate)
+        self.ir["coverage_edges"] = [
+            {
+                "atom_id": "ATOM-001",
+                "workpack_ids": ["MB-P1"],
+                "stage_ids": ["P1"],
+                "release_step_ids": [],
+                "owner_project_ids": ["MAIN_HARNESS_BUILD"],
+                "routing_basis": "EXPLICIT_USER_CONFIRMED",
+            }
+        ]
+
+        compile_candidate(
+            self.ir,
+            SPEC_ROOT,
+            self.root / "explicit-coverage-staging",
+            explicit_candidate,
+            CREATED_AT,
+        )
+
+        matrix = json.loads(
+            (
+                explicit_candidate
+                / "canonical_sources/ATOM_COVERAGE_MATRIX.json"
+            ).read_text(encoding="utf-8")
+        )
+        atom = next(
+            item for item in matrix["coverage"] if item["atom_id"] == "ATOM-001"
+        )
+        self.assertEqual(atom["workpack_ids"], ["MB-P1"])
+        self.assertEqual(atom["stage_ids"], ["P1"])
+        self.assertEqual(atom["routing_basis"], "EXPLICIT_USER_CONFIRMED")
+        self.assertEqual(validate_candidate(explicit_candidate)["status"], "PASS")
+
+    def test_python_target_still_requires_codex_for_coding_workpacks(self) -> None:
+        python_candidate = self.root / "python-runtime-candidate"
+        self.ir["target"]["output_root"] = str(python_candidate)
+        self.ir["target"]["primary_runtime"] = "Python 3.11"
+
+        compile_candidate(
+            self.ir,
+            SPEC_ROOT,
+            self.root / "python-runtime-staging",
+            python_candidate,
+            CREATED_AT,
+        )
+
+        ownership = json.loads(
+            (
+                python_candidate / "constitution/RUNTIME_OWNERSHIP.json"
+            ).read_text(encoding="utf-8")
+        )
+        commands = json.loads(
+            (
+                python_candidate
+                / "project_start_packages/main_build/COMMAND_MANIFEST.json"
+            ).read_text(encoding="utf-8")
+        )
+        coding = next(
+            item
+            for item in commands["commands"]
+            if item["command_id"] == "MB-CODEX-CODING"
+        )
+        self.assertEqual(ownership["required_executor"]["name"], "Python 3.11")
+        self.assertEqual(ownership["coding_agent_executor"]["name"], "Codex")
+        self.assertTrue(coding["executable_abs"].endswith("/codex"))
+        self.assertIsNone(coding["argv"])
+        self.assertEqual(validate_candidate(python_candidate)["status"], "PASS")
+
+    def test_codex_coding_command_cannot_be_replaced_by_python(self) -> None:
+        def replace_executor(value: dict) -> None:
+            command = next(
+                item
+                for item in value["commands"]
+                if item["command_id"] == "MB-CODEX-CODING"
+            )
+            python = str(
+                self.candidate
+                / "project_start_packages/main_build/.venv/bin/python"
+            )
+            command["executable"] = python
+            command["executable_abs"] = python
+
+        self._mutate_json(
+            "project_start_packages/main_build/COMMAND_MANIFEST.json",
+            replace_executor,
+        )
+
+        self.assertIn("CODEX_CODING_COMMAND_SUBSTITUTED", self._finding_codes())
+
+    def test_release_pipeline_cannot_omit_certification_environment_node(self) -> None:
+        def remove_node(value: dict) -> None:
+            value["steps"] = [
+                item
+                for item in value["steps"]
+                if item["step_id"] != "SINGLE_CERTIFICATION_ENV_CREATE"
+            ]
+
+        self._mutate_json("RELEASE_PIPELINE_MANIFEST.json", remove_node)
+
+        self.assertIn("RELEASE_PIPELINE_ORDER_INVALID", self._finding_codes())
+
+    def test_control_plane_epoch_and_hash_binding_drift_is_rejected(self) -> None:
+        self._mutate_json(
+            "PROGRAM_AUTOMATION_POLICY.json",
+            lambda value: value.update(
+                {"control_plane_epoch": 1, "profile_lock_hash": "f" * 64}
+            ),
+        )
+
+        self.assertIn("CONTROL_ASSET_BINDING_MISMATCH", self._finding_codes())
+
+    def test_empty_invalidation_edges_are_rejected(self) -> None:
+        self._mutate_json(
+            "INVALIDATION_DAG.json",
+            lambda value: value.update({"edges": []}),
+        )
+
+        self.assertIn("INVALIDATION_DAG_INCOMPLETE", self._finding_codes())
+
+    def test_tampered_ledger_event_hash_is_rejected(self) -> None:
+        self._make_tree_writable(self.candidate)
+        path = self.candidate / "PHASE_TRANSITION_LEDGER.jsonl"
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["event_hash"] = "0" * 64
+        path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+
+        self.assertIn("LEDGER_EVENT_HASH_INVALID", self._finding_codes())
+
+    def test_profile_lock_drift_is_rejected(self) -> None:
+        self._mutate_json(
+            "PROFILE_LOCK.json",
+            lambda value: value.update({"selected_profile": "LITE"}),
+        )
+
+        codes = self._finding_codes()
+        self.assertIn("PROFILE_LOCK_HASH_MISMATCH", codes)
+        self.assertIn("PROFILE_LOCK_BOUNDARY_INVALID", codes)
+
+    def test_program_author_role_escalation_is_rejected(self) -> None:
+        self._mutate_json(
+            "PACKAGE_ROLES.json",
+            lambda value: value["roles"]["program_author"].update(
+                {"may_execute_workpacks": True}
+            ),
+        )
+
+        self.assertIn("PROGRAM_AUTHOR_AUTHORITY_ESCALATED", self._finding_codes())
+
+    def test_duplicate_coverage_row_is_rejected(self) -> None:
+        self._mutate_json(
+            "canonical_sources/ATOM_COVERAGE_MATRIX.json",
+            lambda value: value["coverage"].append(dict(value["coverage"][0])),
+        )
+
+        self.assertIn("COVERAGE_ATOM_ID_NOT_UNIQUE", self._finding_codes())
+
+
+if __name__ == "__main__":
+    unittest.main()
