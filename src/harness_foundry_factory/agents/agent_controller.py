@@ -1,9 +1,11 @@
 """Experimental Plan/Scope 1.3 controller path.
 
-This is deliberately separate from the mature Codex/local controller. It
-requires a prepared event that carries the 1.3 plan/scope, and it records its
-own attempt events. It is a fixture/transition path, not a replacement for the
-existing acceptance projection until that projection is extended.
+This is deliberately separate from the mature Codex/local controller: it
+requires a prepared event that carries the 1.3 plan/scope and dispatches
+through agent adapters. Its attempt, acceptance and budget facts come from the
+same projections (`build_state`) and the same elided stream reads as the 1.2
+controller and `read-build`, so budgets are cumulative across calls and
+invalidations are honoured.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from .scope13 import (agent_read_roots, assurance_label, execution_mode, fs_enfo
                       owner_independence, validate_scope_13, verifier_files)
 from .artifacts import ingest as ingest_artifacts
 from harness_foundry_factory.build_check_protocol import public_feedback
+from harness_foundry_factory.build_state import attempt_budget, project_budget_attempts, project_execution_state
 from .verifier import VerifierContract, VerifierContractError
 from .verifier_runner import run_verifier
 
@@ -121,8 +124,19 @@ class AgentBuildController:
                 break
         return results
 
+    def _events(self):
+        """The complete stream with source bodies elided (shared with the 1.2 controller)."""
+        from harness_foundry_factory.build_runtime import control_events
+        return control_events(self.store, self.program_id)
+
+    @staticmethod
+    def _budget(events, prepared_id, scope):
+        """Cumulative budget over the whole lineage, the same projection the 1.2
+        controller and read-build use; a fresh advance() call does not reset it."""
+        return attempt_budget(scope, list(project_budget_attempts(events, prepared_id).values()))
+
     def advance(self, prepared_id):
-        events = self.store.list_events(self.program_id)
+        events = self._events()
         prepared = _event(events, prepared_id, "BUILD_AUTHORIZATION_PREPARED")
         scope = prepared["payload"]["scope"]
         plan = prepared["payload"].get("plan")
@@ -136,24 +150,20 @@ class AgentBuildController:
             raise ValueError("agent build authorization is revoked")
         validate_scope_13(plan, scope)
         # Recover only from persisted old events; never re-dispatch an uncertain
-        # attempt or a task the store already accepted.
+        # attempt or a task the store already accepted. Both facts come from the
+        # shared projection, so invalidation events are honoured here too.
         task_ids = {task["workpack_id"] for task in plan["workpacks"]}
-        started = {row["payload"].get("attempt_id") for row in events
-                   if row["event_type"] == "BUILD_ATTEMPT_STARTED"
-                   and row["payload"].get("prepared_event_id") == prepared_id}
-        finished = {row["payload"].get("attempt_id"): row for row in events
-                    if row["event_type"] == "BUILD_ATTEMPT_FINISHED"
-                    and row["payload"].get("prepared_event_id") == prepared_id}
-        unresolved = sorted(key for key in started - set(finished) if key)
+        attempts, accepted_records = project_execution_state(events, prepared_id)
+        unresolved = sorted(key for key, row in attempts.items()
+                            if row["status"] in {"IN_FLIGHT", "UNKNOWN_SIDE_EFFECT"})
         if unresolved:
             return {"status": "HELD_UNRESOLVED_ATTEMPT", "attempt_ids": unresolved,
                     "accepted_workpacks": [],
                     "next_action": "RECONCILE_EFFECTS", "execution_started": False,
                     "harness_e2e_verified": False}
         agent_sandbox = "UNKNOWN"
-        accepted = sorted({row["payload"]["workpack_id"] for row in finished.values()
-                           if row["payload"].get("status") == "ACCEPTED"
-                           and row["payload"].get("workpack_id") in task_ids})
+        finished = {key: {"payload": row} for key, row in accepted_records.items() if key in task_ids}
+        accepted = sorted(finished)
         workspace = Path(scope["workspace_root"]).resolve()
         staging_root = Path(scope["staging_root"]).resolve() if "staging_root" in scope else None
         cas_root = Path(scope["cas_root"]).resolve() if "cas_root" in scope else None
@@ -184,9 +194,8 @@ class AgentBuildController:
                     return {"status": "HELD_ACCEPTED_ARTIFACT_DRIFT", "workpack_id": row["payload"].get("workpack_id"),
                             "artifact": artifact.get("path"), "execution_started": False,
                             "next_action": "EXPLICIT_REBUILD_PLAN", "harness_e2e_verified": False}
-        used = 0
         ownership_labels = {row["payload"]["owner_independence"] for row in finished.values()
-                            if row["payload"].get("status") == "ACCEPTED" and "owner_independence" in row["payload"]}
+                            if "owner_independence" in row["payload"]}
         for task in plan["workpacks"]:
             if task["workpack_id"] in accepted:
                 continue
@@ -218,21 +227,20 @@ class AgentBuildController:
             ownership = {"owner_independence": owner_independence(
                 scope, task, verifier_contract.owner if verifier_contract is not None else None)}
             ownership_labels.add(ownership["owner_independence"])
-            task_attempts = 0
+            owners = prepared["payload"].get("task_budget_owners", {}).get(task["workpack_id"], [task["workpack_id"]])
             feedback = None
             while True:
-                if used >= scope["max_attempts"]:
+                budget = self._budget(events, prepared_id, scope)
+                used = budget["attempts_consumed"]
+                if budget["attempts_remaining"] <= 0:
                     return {"status": "ATTEMPT_BUDGET_EXHAUSTED", "accepted_workpacks": accepted,
-                            "attempts_used": used, "execution_started": True,
+                            "attempts_used": used, "budget": budget, "execution_started": True,
                             "harness_e2e_verified": False}
-                if task_attempts >= scope["max_task_attempts"]:
+                if any(budget["task_attempts_remaining"].get(owner, scope["max_task_attempts"]) <= 0 for owner in owners):
                     return {"status": "TASK_REPAIR_BUDGET_EXHAUSTED", "workpack_id": task["workpack_id"],
-                            "accepted_workpacks": accepted, "attempts_used": used,
+                            "accepted_workpacks": accepted, "attempts_used": used, "budget": budget,
                             "execution_started": True, "harness_e2e_verified": False}
-                used += 1
-                task_attempts += 1
                 attempt_id = "AGENT-ATTEMPT-" + uuid4().hex
-                owners = prepared.get("task_budget_owners", {}).get(task["workpack_id"], [task["workpack_id"]])
                 started = {"attempt_id": attempt_id, "workpack_id": task["workpack_id"],
                            "job_id": task["job_id"], "prepared_event_id": prepared_id,
                            "proposal_event_id": prepared["payload"].get("proposal_event_id"),
@@ -244,7 +252,7 @@ class AgentBuildController:
                     "payload": started}], expected_revision=len(events),
                     idempotency_key=attempt_id + ":start",
                     created_at=datetime.now(timezone.utc).isoformat(), require_new=True)
-                events = self.store.list_events(self.program_id)
+                events = self._events()
                 attempt_workspace = (staging_root / attempt_id) if use_cas else workspace
                 if use_cas:
                     attempt_workspace.mkdir(parents=True, exist_ok=True)
@@ -326,26 +334,30 @@ class AgentBuildController:
                     "payload": payload}], expected_revision=len(events),
                     idempotency_key=attempt_id + ":finish",
                     created_at=datetime.now(timezone.utc).isoformat(), require_new=True)
-                events = self.store.list_events(self.program_id)
+                events = self._events()
                 if passed:
                     accepted.append(task["workpack_id"])
                     break
+                budget = self._budget(events, prepared_id, scope)
+                used = budget["attempts_consumed"]
                 if verifier_drift:
                     return {"status": "HELD_VERIFIER_IDENTITY", "workpack_id": task["workpack_id"],
                             "attempt_id": attempt_id, "diagnostic": verifier_drift,
-                            "accepted_workpacks": accepted, "attempts_used": used,
+                            "accepted_workpacks": accepted, "attempts_used": used, "budget": budget,
                             "execution_started": True, "harness_e2e_verified": False}
-                if task_attempts >= scope["max_task_attempts"]:
+                task_exhausted = any(budget["task_attempts_remaining"].get(owner, scope["max_task_attempts"]) <= 0
+                                     for owner in owners)
+                if task_exhausted:
                     return {"status": "TASK_REPAIR_BUDGET_EXHAUSTED", "workpack_id": task["workpack_id"],
                             "attempt_id": attempt_id, "artifact_error": artifact_error,
                             "verification": verification, "accepted_workpacks": accepted,
-                            "attempts_used": used, "execution_started": True,
+                            "attempts_used": used, "budget": budget, "execution_started": True,
                             "harness_e2e_verified": False}
                 # Checkers that separate public_reason from private_detail
                 # feed only the public part back to the producer.
                 projected = [{**row, "result": public_feedback(row["result"]) or row["result"]} for row in verification]
                 feedback = str({"artifact_error": artifact_error, "verification": projected})[:2000]
-                if task_attempts < scope["max_task_attempts"] and used < scope["max_attempts"]:
+                if budget["attempts_remaining"] > 0:
                     self.store.append_batch(self.program_id, [{
                         "event_type": "BUILD_AGENT_REPAIR_REQUESTED",
                         "payload": {"prepared_event_id": prepared_id, "workpack_id": task["workpack_id"],
@@ -353,15 +365,16 @@ class AgentBuildController:
                                     "budget_workpack_ids": owners}}],
                         expected_revision=len(events), idempotency_key=attempt_id + ":repair",
                         created_at=datetime.now(timezone.utc).isoformat(), require_new=True)
-                    events = self.store.list_events(self.program_id)
-                if used >= scope["max_attempts"]:
+                    events = self._events()
+                else:
                     return {"status": "ATTEMPT_BUDGET_EXHAUSTED", "workpack_id": task["workpack_id"],
                             "attempt_id": attempt_id, "artifact_error": artifact_error,
                             "verification": verification, "accepted_workpacks": accepted,
-                            "attempts_used": used, "execution_started": True,
+                            "attempts_used": used, "budget": budget, "execution_started": True,
                             "harness_e2e_verified": False}
+        budget = self._budget(events, prepared_id, scope)
         return {"status": "PLAN_CHECKS_ACCEPTED", "accepted_workpacks": accepted,
-                "attempts_used": used, "agent_controller": "EXPERIMENTAL_1_3",
+                "attempts_used": budget["attempts_consumed"], "budget": budget, "agent_controller": "EXPERIMENTAL_1_3",
                 "agent_sandbox_enforcement": agent_sandbox, **enforcement,
                 "owner_independence": sorted(ownership_labels) or ["UNDECLARED"],
                 "harness_e2e_verified": False}

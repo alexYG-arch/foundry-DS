@@ -157,6 +157,47 @@ class AgentControllerTests(unittest.TestCase):
         self.assertEqual(result["status"], "TASK_REPAIR_BUDGET_EXHAUSTED", result)
         self.assertEqual(adapter.calls, 1)
 
+    def test_budget_is_cumulative_across_advance_calls(self):
+        adapter = FlakyAdapter(self.workspace, always_fail=True)
+        controller = AgentBuildController(self.store, self.program, adapter_factory=lambda task, scope: adapter)
+        first = controller.advance(self.prepared["event_id"])
+        self.assertEqual(first["status"], "TASK_REPAIR_BUDGET_EXHAUSTED", first)
+        self.assertEqual((adapter.calls, first["attempts_used"]), (2, 2))
+        # A new call must not hand the same preparation a fresh budget.
+        second = controller.advance(self.prepared["event_id"])
+        self.assertEqual(second["status"], "TASK_REPAIR_BUDGET_EXHAUSTED", second)
+        self.assertEqual(adapter.calls, 2)
+        self.assertEqual(second["budget"]["task_attempts_remaining"]["IMPLEMENT"], 0)
+        self.assertFalse(second["budget"]["reset"])
+
+    def test_invalidated_acceptance_is_rebuilt_not_trusted(self):
+        adapter = FlakyAdapter(self.workspace, fail_first=False)
+        controller = AgentBuildController(self.store, self.program, adapter_factory=lambda task, scope: adapter)
+        self.assertEqual(controller.advance(self.prepared["event_id"])["status"], "PLAN_CHECKS_ACCEPTED")
+        self.assertEqual(adapter.calls, 1)
+        revision = len(self.store.list_events(self.program))
+        self.store.append_batch(self.program, [{"event_type": "BUILD_ACCEPTANCE_INVALIDATED", "payload": {
+            "prepared_event_id": self.prepared["event_id"], "workpack_ids": ["IMPLEMENT"],
+            "reason": "CODEX_CONFIRMED_REPAIR_REQUEST"}}], expected_revision=revision,
+            idempotency_key="invalidate", created_at=datetime.now(timezone.utc).isoformat(), require_new=True)
+        result = controller.advance(self.prepared["event_id"])
+        self.assertEqual(result["status"], "PLAN_CHECKS_ACCEPTED", result)
+        self.assertEqual(adapter.calls, 2, "the invalidated task was rebuilt instead of reused")
+        self.assertEqual(result["attempts_used"], 2)
+
+    def test_readback_projects_agent_attempts_and_repair_requests(self):
+        from harness_foundry_factory.build_state import project_readback_attempts
+        adapter = FlakyAdapter(self.workspace, fail_first=True)
+        AgentBuildController(self.store, self.program, adapter_factory=lambda task, scope: adapter).advance(self.prepared["event_id"])
+        rows = list(project_readback_attempts(self.store.list_events(self.program)).values())
+        self.assertEqual([row["status"] for row in rows], ["REJECTED", "ACCEPTED"])
+        self.assertEqual({row["phase"] for row in rows}, {"AGENT_ADAPTER"})
+        self.assertEqual({row["implementation_observation_status"] for row in rows}, {"ADAPTER_RESULT"})
+        self.assertEqual(len(rows[0]["repair_requests"]), 1)
+        self.assertIn("Previous attempt was rejected", adapter.prompts[1])
+        self.assertEqual(rows[0]["recovery"]["next_action"], "REPAIR_WITHIN_BUDGET")
+        self.assertEqual(rows[1]["recovery"]["next_action"], "NO_REPLAY")
+
     def test_controller_holds_unresolved_started_attempt(self):
         revision = len(self.store.list_events(self.program))
         now = datetime.now(timezone.utc).isoformat()

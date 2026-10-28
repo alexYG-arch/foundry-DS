@@ -17,6 +17,13 @@ def _apply_attempt_event(attempts, event, accepted=None):
                 accepted[payload["workpack_id"]] = payload
             else:
                 accepted.pop(payload["workpack_id"], None)
+    elif kind == "BUILD_AGENT_REPAIR_REQUESTED":
+        # The 1.3 controller's repair hand-off to the producer; it changes no
+        # status, it records why the next attempt was asked for.
+        failed = attempts.get(payload.get("failed_attempt_id"))
+        if failed is not None:
+            failed.setdefault("repair_requests", []).append(
+                {key: payload[key] for key in ("workpack_id", "feedback", "budget_workpack_ids") if key in payload})
     elif kind == "BUILD_ACCEPTANCE_INVALIDATED":
         if accepted is not None:
             for workpack_id in payload["workpack_ids"]:
@@ -179,8 +186,12 @@ def project_readback_attempts(events):
     for row in attempts.values():
         observed = {command["command_id"] for command in row["implementation_commands"]}
         missing = implementation_plans[row["attempt_id"]] - observed
+        agent_attempt = row.get("executor") == "AGENT"
         row["implementation_observation_status"] = (
-            "MISSING_OBSERVATION" if missing else "OBSERVED" if observed else "NO_IMPLEMENTATION_COMMAND")
+            "MISSING_OBSERVATION" if missing else "OBSERVED" if observed
+            # AGENT attempts carry the adapter's own result instead of command observations.
+            else "ADAPTER_RESULT" if agent_attempt and isinstance(row.get("result"), dict)
+            else "NO_IMPLEMENTATION_COMMAND")
         row["missing_implementation_command_ids"] = sorted(missing)
         action = {"UNKNOWN_SIDE_EFFECT": "RECONCILE_EFFECTS", "IN_FLIGHT": "RECONCILE_COMMAND_OBSERVATIONS",
                   "BLOCKED": "REPAIR_RUNTIME_ENVIRONMENT", "REJECTED": "REPAIR_WITHIN_BUDGET",
@@ -189,7 +200,7 @@ def project_readback_attempts(events):
                   "INVALIDATED": "REBUILD_AFFECTED_BRANCH_WITHIN_BUDGET"}.get(row["status"], "INSPECT")
         row["recovery"] = {"next_action": action, "automatic_acceptance": False}
         command = row.get("last_command", {})
-        row["phase"] = command.get("phase", "NOT_DISPATCHED")
+        row["phase"] = command.get("phase", "AGENT_ADAPTER" if agent_attempt else "NOT_DISPATCHED")
         row["recovery"].update(owner="LOCAL_OPERATOR" if row["status"] in {"UNKNOWN_SIDE_EFFECT", "BLOCKED"}
                                else "BUILD_CONTROLLER", evidence_attempt_id=row["attempt_id"],
                                minimum_return_path=action)
