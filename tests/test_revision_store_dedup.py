@@ -69,6 +69,55 @@ class DedupStoreTests(unittest.TestCase):
             with self.assertRaises(Exception):
                 RevisionControlEventStore(path)
 
+    def test_interleaved_appends_on_one_instance_never_commit_dangling_content(self):
+        """Two writers share one store object; the loser's prepared content must not
+        be the only content the winner's committed event can reach."""
+        import threading
+        from unittest.mock import patch
+        from harness_foundry_factory.build_types import RevisionConflictError
+
+        barrier = threading.Barrier(2)
+        original = DedupRevisionControlEventStore._prepare_entries
+
+        def interleaved(self, entries):
+            name = entries[0]["payload"]["snapshot"]["sources"][0]["source_id"]
+            if name == "A":
+                result = original(self, entries)
+                barrier.wait(timeout=5)       # B prepares after A, before A's transaction
+                threading.Event().wait(0.1)
+                return result
+            barrier.wait(timeout=5)
+            result = original(self, entries)
+            threading.Event().wait(0.5)       # B enters its transaction after A committed
+            return result
+
+        def source(name, text):
+            return {"snapshot": {"sources": [{"source_id": name, "text": text}]}}
+
+        with tempfile.TemporaryDirectory() as d:
+            store = DedupRevisionControlEventStore(Path(d) / "control.sqlite3")
+            outcomes = {}
+
+            def writer(name):
+                try:
+                    store.append_batch("P", [{"event_type": "BUILD_SOURCES_CAPTURED", "payload": source(name, f"text-{name}")}],
+                                       expected_revision=0, idempotency_key=name, created_at="2026-10-27T00:00:00Z")
+                    outcomes[name] = "COMMITTED"
+                except RevisionConflictError:
+                    outcomes[name] = "CONFLICT"
+
+            with patch.object(DedupRevisionControlEventStore, "_prepare_entries", interleaved):
+                threads = [threading.Thread(target=writer, args=(name,)) for name in ("A", "B")]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join()
+            self.assertEqual(sorted(outcomes.values()), ["COMMITTED", "CONFLICT"])
+            events = store.list_events("P")   # hydration must succeed for every committed event
+            self.assertEqual(len(events), 1)
+            winner = events[0]["payload"]["snapshot"]["sources"][0]
+            self.assertEqual(winner["text"], f"text-{winner['source_id']}")
+
     def test_v1_store_is_untouched(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "control.sqlite3"

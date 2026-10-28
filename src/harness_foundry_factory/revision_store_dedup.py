@@ -171,13 +171,12 @@ class DedupRevisionControlEventStore(RevisionControlEventStore):
             payload, found = self._compact(entry["payload"])
             compacted.append({"event_type": entry["event_type"], "payload": payload})
             contents.update(found)
-        self._pending_contents = contents
-        return compacted
+        return compacted, contents
 
-    def _append_aux(self, connection, entries):
-        contents = getattr(self, "_pending_contents", {})
-        self._pending_contents = {}
-        for digest, text in contents.items():
+    def _append_aux(self, connection, entries, contents):
+        # Contents arrive with this call; no instance attribute is shared
+        # between concurrent appends on the same store object.
+        for digest, text in (contents or {}).items():
             existing = connection.execute(
                 "SELECT text FROM control_source_content WHERE content_sha256 = ?", (digest,)
             ).fetchone()

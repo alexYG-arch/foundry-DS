@@ -199,7 +199,7 @@ class RevisionControlEventStore:
                 or not idempotency_key or not isinstance(created_at, str) or not created_at
                 or not isinstance(entries, (list, tuple)) or not entries):
             raise RequestValidationError("control event batch requires program_id, idempotency_key, time and entries")
-        entries = self._prepare_entries(entries)
+        entries, aux = self._prepare_entries(entries)
         normalized = []
         for entry in entries:
             if (not isinstance(entry, Mapping) or set(entry) != {"event_type", "payload"}
@@ -233,7 +233,7 @@ class RevisionControlEventStore:
             if expected_revision != revision:
                 raise RevisionConflictError("control event stream changed before append",
                                          details={"expected_revision": expected_revision, "actual_revision": revision})
-            self._append_aux(connection, normalized)
+            self._append_aux(connection, normalized, aux)
             appended = []
             for entry in normalized:
                 revision += 1
@@ -251,10 +251,15 @@ class RevisionControlEventStore:
 
 
     def _prepare_entries(self, entries):
-        """Store-format hook; default keeps bytes unchanged."""
-        return entries
+        """Store-format hook; returns ``(entries, aux)``.
 
-    def _append_aux(self, connection, entries):
+        ``aux`` travels with this call into ``_append_aux`` so concurrent
+        appends on one instance never share mutable state. Default keeps
+        bytes unchanged and carries nothing.
+        """
+        return entries, None
+
+    def _append_aux(self, connection, entries, aux):
         """Store-format hook inside the append transaction."""
         return None
 
