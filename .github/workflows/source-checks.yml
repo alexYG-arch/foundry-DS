@@ -61,6 +61,26 @@ jobs:
               print(f"- **load errors**: `{load_errors[:5]}`")
           PY
 
+      - name: Annotate gate failure facts
+        if: failure()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path("build/source-checks.json")
+          if not path.is_file():
+              print("::error title=Gate report::missing build/source-checks.json")
+              raise SystemExit(0)
+          data = json.loads(path.read_text())
+          tests = data.get("tests", {})
+          print(f"::error title=Gate status::{data.get('status')} discovered={tests.get('discovered')} passed={tests.get('passed')} skipped={len(tests.get('skipped', []))} failures={len(tests.get('failures', []))} errors={len(tests.get('errors', []))}")
+          for key in ("failures", "errors", "skipped"):
+              for item in tests.get(key, [])[:12]:
+                  print(f"::error title=Gate {key}::{item}")
+          for item in data.get("missing_modules", [])[:8]:
+              print(f"::error title=Gate missing::{item}")
+          PY
+
       - name: Preserve diagnostic summary
         if: always()
         uses: actions/upload-artifact@v7
